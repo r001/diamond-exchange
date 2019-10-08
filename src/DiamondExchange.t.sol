@@ -317,6 +317,8 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     mapping(address => bool) public decimalsSet;
     mapping(address => uint) public dpassId;
     mapping(address => bool) public erc20;                      // tells if token is ERC20 ( eth considered ERC20 here)
+    mapping(address => uint) dust;
+    mapping(address => bool) dustSet;
 
     uint public fixFee = 0 ether;           
     uint public varFee = .2 ether;          // variable fee is 20% of value
@@ -338,6 +340,16 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     uint feeSpentDpt;
     uint profitSellTokenT;
     uint expectedBalance;
+    uint feeSpentDptV;
+    uint finalSellV;
+    uint finalBuyV;
+    uint finalSellT;
+    uint finalBuyT;
+    uint userDptV;
+    uint balanceUserIncreaseT;
+    uint balanceUserIncreaseV;
+    uint balanceUserDecreaseT;
+    uint balanceUserDecreaseV;
 
     function setUp() public {
         cdc = address(new Cdc());
@@ -362,21 +374,37 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         usdRate[cdc] = 7 ether;
         usdRate[eth] = 11 ether;
         usdRate[dai] = 13 ether;
+        usdRate[eng] = 59 ether;
 
         decimals[dpt] = 18;
         decimals[cdc] = 18;
         decimals[eth] = 18;
         decimals[dai] = 18;
+        decimals[eng] = 8;
 
         decimalsSet[dpt] = true;
         decimalsSet[cdc] = true;
         decimalsSet[eth] = true;
         decimalsSet[dai] = true;
+        decimalsSet[eng] = true;
+
+        dust[dpt] = 10000;
+        dust[cdc] = 10000;
+        dust[eth] = 10000;
+        dust[dai] = 10000;
+        dust[eng] = 10;
+
+        dustSet[dpt] = true;
+        dustSet[cdc] = true;
+        dustSet[eth] = true;
+        dustSet[dai] = true;
+        dustSet[eng] = true;
 
         feed[eth] = address(new TestFeedLike(usdRate[eth], true));
         feed[dpt] = address(new TestFeedLike(usdRate[dpt], true));
         feed[cdc] = address(new TestFeedLike(usdRate[cdc], true));
         feed[dai] = address(new TestFeedLike(usdRate[dai], true));
+        feed[eng] = address(new TestFeedLike(usdRate[dai], true));
 
         burner = address(uint160(address(new Burner(DSToken(dpt))))); // Burner()
 
@@ -388,6 +416,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         custodian20[cdc] = asm;
         custodian20[eth] = asm;
         custodian20[dai] = asm;
+        custodian20[eng] = asm;
 
         TrustedASMTester(asm).setOwnerOf(cdc, true);                             // asset management will handle this token
         TrustedASMTester(asm).setAmtForSale(cdc, INITIAL_BALANCE);
@@ -413,6 +442,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
             profitRate,
             wal
         ))));
+
         CdcExchange(exchange).setConfig("canSellErc20", dai, true);
         CdcExchange(exchange).setConfig("priceFeed", dai, feed[dai]);
         CdcExchange(exchange).setConfig("rate", dai, usdRate[dai]);
@@ -436,6 +466,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         CdcExchange(exchange).setConfig("rate", cdc, usdRate[cdc]);
         CdcExchange(exchange).setConfig("manualRate", cdc, true);
         CdcExchange(exchange).setConfig("decimals", cdc, 18);
+        CdcExchange(exchange).setConfig("handledByAsm", cdc, true);
 
         CdcExchange(exchange).setConfig("canSellErc20", dpt, true);
         CdcExchange(exchange).setConfig("custodian20", dpt, asm);
@@ -445,6 +476,13 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         CdcExchange(exchange).setConfig("decimals", dpt, 18);
         CdcExchange(exchange).setConfig("custodian20", dpt, custodian20[dpt]);
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(takeProfitOnlyInDpt), "");
+
+        CdcExchange(exchange).setConfig("canSellErc20", eng, true);
+        CdcExchange(exchange).setConfig("priceFeed", eng, feed[eng]);
+        CdcExchange(exchange).setConfig("rate", eng, usdRate[eng]);
+        CdcExchange(exchange).setConfig("manualRate", eng, true);
+        CdcExchange(exchange).setConfig("decimals", eng, 18);
+        CdcExchange(exchange).setConfig("custodian20", eng, custodian20[eng]);
 
         liquidityContract = address(uint160(address(new CdcExchangeTester(exchange, dpt, cdc, dai))));
         DSToken(dpt).transfer(liquidityContract, INITIAL_BALANCE);
@@ -458,6 +496,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         Cdc(cdc).approve(exchange, uint(-1));
         DSToken(dpt).approve(exchange, uint(-1));
         DSToken(dai).approve(exchange, uint(-1));
+        DSToken(eng).approve(exchange, uint(-1));
         
         // Prepare dpass tokens
         uint dpassOwnerPrice = 137 ether;
@@ -507,6 +546,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         user.transfer(INITIAL_BALANCE);
         Cdc(cdc).transfer(user, INITIAL_BALANCE);
         DSToken(dai).transfer(user, INITIAL_BALANCE);
+        DSToken(eng).transfer(user, INITIAL_BALANCE);
 
         CdcExchangeTester(user).doApprove(dpt, exchange, uint(-1));
         CdcExchangeTester(user).doApprove(cdc, exchange, uint(-1));
@@ -515,20 +555,20 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         balance[address(this)][eth] = address(this).balance;
         balance[user][eth] = user.balance;
         balance[user][cdc] = Cdc(cdc).balanceOf(user);
-        balance[user][dpt] = Cdc(dpt).balanceOf(user);
-        balance[user][dai] = Cdc(dai).balanceOf(user);
+        balance[user][dpt] = DSToken(dpt).balanceOf(user);
+        balance[user][dai] = DSToken(dai).balanceOf(user);
 
         balance[asm][eth] = asm.balance;
         balance[asm][cdc] = Cdc(cdc).balanceOf(asm);
-        balance[asm][dpt] = Cdc(dpt).balanceOf(asm);
-        balance[asm][dai] = Cdc(dai).balanceOf(asm);
+        balance[asm][dpt] = DSToken(dpt).balanceOf(asm);
+        balance[asm][dai] = DSToken(dai).balanceOf(asm);
 
         balance[liquidityContract][eth] = liquidityContract.balance;
         balance[wal][eth] = wal.balance;
         balance[custodian20[eth]][eth] = custodian20[eth].balance;
         balance[custodian20[cdc]][cdc] = Cdc(cdc).balanceOf(custodian20[cdc]);
-        balance[custodian20[dpt]][cdc] = DSToken(dpt).balanceOf(custodian20[dpt]);
-        balance[custodian20[dai]][cdc] = DSToken(dai).balanceOf(custodian20[dai]);
+        balance[custodian20[dpt]][dpt] = DSToken(dpt).balanceOf(custodian20[dpt]);
+        balance[custodian20[dai]][dai] = DSToken(dai).balanceOf(custodian20[dai]);
 
         emit log_named_address("exchange", exchange);
         emit log_named_address("dpt", dpt);
@@ -539,27 +579,27 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         emit log_named_address("liq", liquidityContract);
         emit log_named_address("burner", burner);
     }
-/*
+
     function doExchange(address sellToken, uint256 sellAmtOrId, address buyToken, uint256 buyAmtOrId) public {
-        uint currentUserBalanceT;
+        uint origUserBalanceT;
         uint buyT;
         uint buyV;
         bool _takeProfitOnlyInDpt = CdcExchange(exchange).takeProfitOnlyInDpt();
 
         if (sellToken == eth) {
-            currentUserBalanceT = user.balance;
+            origUserBalanceT = user.balance;
         } else {
-            currentUserBalanceT = DSToken(sellToken).balanceOf(user);
+            origUserBalanceT = DSToken(sellToken).balanceOf(user);
         }
 
         sentV = sellAmtOrId == uint(-1) ?                                               // sent value in fiat currency
-            wmulV(currentUserBalanceT, usdRate[sellToken], sellToken) : 
+            wmulV(origUserBalanceT, usdRate[sellToken], sellToken) : 
             erc20[sellToken] ?
-                wmulV(sellAmtOrId, usdRate[sellToken], sellToken) :
+                wmulV(min(sellAmtOrId, origUserBalanceT), usdRate[sellToken], sellToken) :
                 TrustedASMTester(asm).getPrice(sellToken, sellAmtOrId);
         
         buyT = erc20[buyToken] ?                                                        // total amount of token available to buy (or tokenid)
-            DSToken(buyToken).balanceOf(custodian20[buyToken]) :
+            min(buyAmtOrId, DSToken(buyToken).balanceOf(custodian20[buyToken])) :
             buyAmtOrId;
         
         buyV = erc20[buyToken] ?                                                        // total value of tokens available to buy (or tokenid)
@@ -570,7 +610,11 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
             wdivT(buyV, usdRate[sellToken], sellToken) :
             0;
 
-        feeV = add(wmul(varFee, min(sentV, buyV)), fixFee);                             // fiat value in fiat
+        feeV = add(
+            wmul(
+                CdcExchange(exchange).varFee(), 
+                min(sentV, buyV)),
+            CdcExchange(exchange).fixFee());                             // fiat value in fiat
 
         feeDpt = wdivT(feeV, usdRate[dpt], dpt);                                        // the amount of DPT tokens to pay for fee
 
@@ -582,13 +626,17 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         
         profitDpt = wdivT(profitV, usdRate[dpt], dpt);                                  // total amount of DPT to pay for profit
 
-        feeSpentDpt = _takeProfitOnlyInDpt ? 
-            min(userDpt, wdivT(profitV, usdRate[dpt], dpt)) :
-            min(userDpt, wdivT(feeV, usdRate[dpt], dpt));
+        feeSpentDpt = sellToken == dpt ? 
+            0 : 
+            _takeProfitOnlyInDpt ? 
+                min(userDpt, wdivT(profitV, usdRate[dpt], dpt)) :
+                min(userDpt, wdivT(feeV, usdRate[dpt], dpt));
 
-        uint feeSpentDptV = wmulV(feeSpentDpt, usdRate[dpt], dpt);
+        feeSpentDptV = wmulV(feeSpentDpt, usdRate[dpt], dpt);
         
-        profitSellTokenT = wdivT(profitV, usdRate[sellToken], sellToken);               // total amount of sellToken to pay for profit
+        profitSellTokenT = erc20[sellToken] ?                // total amount of sellToken to pay for profit
+            wdivT(profitV, usdRate[sellToken], sellToken) :
+            0;
 
         if (feeSpentDpt < feeDpt) {
 
@@ -601,22 +649,28 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
                 0;                                                                      // amount of sellToken to pay for remaining fee
         }
 
-        if (takeProfitOnlyInDpt) {
+        finalSellV = sentV;
+        finalBuyV = buyV;
+        
+        if (sentV - restOfFeeV >= buyV) {
+        
+            finalSellV = add(buyV, restOfFeeV);
 
-            expectedBalance = sub(                                                      // expected balance after tx has been made
-                INITIAL_BALANCE, 
-                userDpt < profitDpt ?
-                    sub(profitDpt, userDpt) :
-                    0);
         } else {
-
-            expectedBalance = sub(
-                INITIAL_BALANCE, 
-                userDpt < feeDpt ?
-                    sub(profitDpt, wmul(userDpt, profitRate)) :
-                    0);
+            
+            finalBuyV = sub(sentV, restOfFeeV);
         }
+        
+        finalSellT = erc20[sellToken] ? 
+            wdivT(finalSellV, usdRate[sellToken], sellToken) :
+            0;
 
+        finalBuyT = erc20[buyToken] ? 
+            wdivT(finalBuyV, usdRate[buyToken], buyToken) :
+            0;
+
+            emit LogTest("user.balance");
+            emit LogTest(user.balance);
         CdcExchangeTester(user).doBuyTokensWithFee(
             sellToken,
             sellAmtOrId,
@@ -624,9 +678,9 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
             buyAmtOrId
         );
 
-        uint userDptV = wmulV(userDpt, usdRate[dpt], dpt);
+        userDptV = wmulV(userDpt, usdRate[dpt], dpt);
 
-        uint balanceUserIncreaseT = erc20[buyToken] ? 
+        balanceUserIncreaseT = erc20[buyToken] ? 
             sub(
                 (buyToken == eth ? 
                     user.balance :
@@ -634,14 +688,15 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
                 balance[user][buyToken]) : 
             0;
 
-        uint balanceUserIncreaseV = erc20[buyToken] ? 
+        balanceUserIncreaseV = erc20[buyToken] ? 
             wmulV(
                 balanceUserIncreaseT,
                 usdRate[buyToken],
                 buyToken) :
             TrustedASMTester(asm).getPrice(buyToken, buyAmtOrId);
-
-        uint balanceUserDecreaseT = erc20[sellToken] ? 
+        emit LogTest("balance[user]");
+        emit LogTest(balance[user][sellToken]);
+        balanceUserDecreaseT = erc20[sellToken] ? 
             sub(
                 balance[user][sellToken],
                 (sellToken == eth ? 
@@ -649,85 +704,164 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
                     DSToken(sellToken).balanceOf(user))) : 
             0;
 
-        uint balanceUserDecreaseV = erc20[sellToken] ? 
+        balanceUserDecreaseV = erc20[sellToken] ? 
             wmulV(
                 balanceUserDecreaseT,
                 usdRate[sellToken],
                 sellToken) :
             TrustedASMTester(asm).getPrice(sellToken, sellAmtOrId);
 
-        emit log_named_uint("--------takeProfitOnlyInDpt", takeProfitOnlyInDpt ? 1 : 0);
-        emit log_named_bytes32("---------------sellToken", getName(sellToken));
-        logUint("---------sellAmtOrId", sellAmtOrId, 18);
-        emit log_named_bytes32("----------------buyToken", getName(buyToken));
-        logUint("----------buyAmtOrId", buyAmtOrId, 18);
-        emit log_bytes32(bytes32("-----------------------------"));
-        logUint("--------------sentV", sentV, 18);
-        logUint("--------------buyV:", buyV, 18);
-        logUint("-----buySellTokenT:", buySellTokenT, 18);
-        logUint("--------feeV(total)", feeV, 18);
-        logUint("------feeDpt(total)", feeDpt, 18);
-        logUint("---------feeT(tot.)", feeSellTokenT, 18);
-        logUint("------------userDpt", userDpt, 18);
-        logUint("-----------userDptV", userDptV, 18);
-        emit log_bytes32(bytes32("-----------------------------"));
-        logUint("---------profitRate", profitRate, 18);
-        logUint("------------profitV", profitV, 18);
-        logUint("----------profitDpt", profitDpt, 18);
-        logUint("------------profitT", profitSellTokenT, 18);
-        logUint("--------feeSpentDpt", feeSpentDpt, 18);
-        logUint("-------feeSpentDptV", feeSpentDptV, 18);
-        logUint("---------restOfFeeV", restOfFeeV, 18);
-        logUint("-------restOfFeeDpt", restOfFeeDpt, 18);
-        logUint("---------restOfFeeT", restOfFeeT, 18);
+        emit log_named_uint("---------takeProfitOnlyInDpt", takeProfitOnlyInDpt ? 1 : 0);
+        emit log_named_bytes32("----------------sellToken", getName(sellToken));
+        logUint("----------sellAmtOrId", sellAmtOrId, 18);
+        emit log_named_bytes32("-----------------buyToken", getName(buyToken));
+        logUint("-----------buyAmtOrId", buyAmtOrId, 18);
+        emit log_bytes32(bytes32("------------------------------"));
+        logUint("---------------sentV", sentV, 18);
+        logUint("---------------buyV:", buyV, 18);
+        logUint("------buySellTokenT:", buySellTokenT, 18);
+        logUint("---------feeV(total)", feeV, 18);
+        logUint("-------feeDpt(total)", feeDpt, 18);
+        logUint("----------feeT(tot.)", feeSellTokenT, 18);
+        logUint("-------------userDpt", userDpt, 18);
+        logUint("------------userDptV", userDptV, 18);
+        emit log_bytes32(bytes32("------------------------------"));
+        logUint("----------profitRate", profitRate, 18);
+        logUint("-------------profitV", profitV, 18);
+        logUint("-----------profitDpt", profitDpt, 18);
+        logUint("-------------profitT", profitSellTokenT, 18);
+        logUint("---------feeSpentDpt", feeSpentDpt, 18);
+        logUint("--------feeSpentDptV", feeSpentDptV, 18);
+        logUint("----------restOfFeeV", restOfFeeV, 18);
+        logUint("--------restOfFeeDpt", restOfFeeDpt, 18);
+        logUint("----------restOfFeeT", restOfFeeT, 18);
+        logUint("balanceUserIncreaseT", balanceUserIncreaseT, 18);
+        logUint("balanceUserIncreaseV", balanceUserIncreaseV, 18);
+        logUint("balanceUserDecreaseT", balanceUserDecreaseT, 18);
+        logUint("balanceUserDecreaseV", balanceUserDecreaseV, 18);
 
         // DPT (eq fee in USD) must be sold from: liquidityContract balance
-        assertEq(dpt.balanceOf(address(liquidityContract)), sub(INITIAL_BALANCE, sub(_takeProfitOnlyInDpt ? profitDpt : feeDpt, feeSpentDpt)));
+        emit log_bytes32("dpt from liq");
+        assertEqDust(
+            sub(INITIAL_BALANCE, DSToken(dpt).balanceOf(address(liquidityContract))), 
+            sellToken == dpt ? 0 : sub(profitDpt, _takeProfitOnlyInDpt ? feeSpentDpt : wmul(feeSpentDpt, profitRate)),
+            dpt);
 
         // ETH for DPT fee must be sent to wallet balance from user balance
-        assertEq(address(wal).balance, add(balance[wal][sellToken], feeEth));    //TODO: finish this
+        emit log_bytes32("sell token as fee to wal");
+        assertEqDust(
+            sellToken == eth ? 
+                address(wal).balance :
+                DSToken(sellToken).balanceOf(wal), 
+            add(balance[wal][sellToken], sub(restOfFeeT, sellToken == dpt ? profitSellTokenT : 0)),
+            sellToken);    
         
         // DPT fee have to be transfered to burner
-        assertEq(dpt.balanceOf(burner), profitDpt);
+        emit log_bytes32("dpt to burner");
+        assertEqDust(DSToken(dpt).balanceOf(burner), profitDpt, dpt);
 
-        // ETH (minus ETH for DPT fee) must be sent to owner balance from user balance
+        // custodian balance of tokens sold by user must increase
         if (erc20[sellToken]) {
 
-            assertEq(
-                currentUserBalanceT,                                                            // current user balance
+            emit log_bytes32("seller bal inc by ERC20 sold");
+            assertEqDust(
+                sellToken == eth ? custodian20[sellToken].balance : DSToken(sellToken).balanceOf(custodian20[sellToken]),
                 add(
-                    balance[custodian20[sellToken]][sellToken],                                 // original balance
-                    add(buySellTokenT, restOfFeeT)));                                           // amount of sell token that must be paid for buy token ...
-                                                                                                // ... + value of sell token sent as fee
+                    balance[custodian20[sellToken]][sellToken],
+                    sub(finalSellT, restOfFeeT)),
+                sellToken);
         } else {
+
+           emit log_bytes32("seller bal inc by ERC721 sold");
             assertEq(
-                TrustedASMTester(asm).getPrice(sellToken, sellAmtOrId),
-                add(balanceUserIncreaseV, feeV));
+                TrustedErc721(sellToken).ownerOf(sellAmtOrId),
+                Dpass(sellToken).ownerOf(sellAmtOrId));
         }
 
-        // ETH on user balance
+        // user balance of tokens sold must decrease
+        if (erc20[sellToken]) {
+
+            emit log_bytes32("user bal dec by ERC20 sold");
+            emit LogTest("user.balance");
+            emit LogTest(user.balance);
+            assertEqDust(
+                sellToken == eth ? user.balance : DSToken(sellToken).balanceOf(user), 
+                sub(
+                    balance[user][sellToken],
+                    finalSellT), 
+                sellToken);
+
+        } else {
+
+            emit log_bytes32("user bal dec by ERC721 sold");
+            assertTrue(Dpass(sellToken).ownerOf(sellAmtOrId) != user);
+        }
+
+        // user balance of tokens bought must increase
         if (erc20[buyToken]) {
+
+            emit log_bytes32("user bal inc by ERC20 bought");
+            assertEqDust(
+                buyToken == eth ? user.balance : DSToken(buyToken).balanceOf(user),
+                add(
+                    balance[user][buyToken],
+                    finalBuyT),
+                buyToken);
+
+        } else {
+        
+            emit log_bytes32("user bal inc by ERC721 bought");
             assertEq(
-                sellToken == eth ?
-                    user.balance : DSToken(buyToken).balanceOf(user),
+                Dpass(buyToken).ownerOf(buyAmtOrId),
+                user);
+        } 
+
+        // tokens bought by user must decrease custodian account
+        if (erc20[buyToken]) {
+
+            emit log_bytes32("seller bal dec by ERC20 bought");
+            assertEqDust(
+                buyToken == eth ? custodian20[buyToken].balance : DSToken(buyToken).balanceOf(custodian20[buyToken]),
                 sub(
                     balance[custodian20[buyToken]][buyToken],
-                    balanceUserDecreaseT));
+                    balanceUserIncreaseT),
+                buyToken);
+        
         } else {
             
+            emit log_bytes32("seller bal dec by ERC721 bought");
             assertEq(
                 Dpass(buyToken).ownerOf(buyAmtOrId), 
                 user);
 
-            assertEq(
-                add(TrustedASMTester(asm).getPrice(buyToken, buyAmtOrId), feeV),
-                add(balanceUserDecreaseV, feeSpentDptV)); 
         }
 
-        // CDC must be transfered to user
-        assertEq(cdc.balanceOf(user), wdiv(sub(wmul(sentEth, ethUsdRate), fee), cdcUsdRate));
+        // make sure fees and tokens sent and received add up
+        emit log_bytes32("fees and tokens add up");
+        assertEqDust(
+            add(balanceUserIncreaseV, feeV), 
+            add(balanceUserDecreaseV, feeSpentDptV)); 
     }         
-*/
+    
+    /*
+    * @dev Compare two numbers with round-off errors considered.
+    * Assume that the numbers are 18 decimals precision.
+    */
+    function assertEqDust(uint a, uint b) public {
+        assertEqDust(a, b, eth); 
+    }
+
+    /*
+    * @dev Compare two numbers with round-off errors considered.
+    * Assume that the numbers have the decimals of token.
+    */
+    function assertEqDust(uint a, uint b, address token) public {
+        uint diff = a - b;
+        require(dustSet[token], "Dust limit must be set to token.");
+        uint dustT = dust[token];
+        assertTrue(diff < dustT || uint(-1) - diff < dustT);
+    }
+
     function getName(address token) public view returns (bytes32 name) {
         if (token == eth) {
             name = "eth";
@@ -810,9 +944,13 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         return bytes32(uint256(a_ ? 1 : 0));
     }
 
-    function () external payable {
+    function sendToken(address token, address to, uint256 amt) public {
+        DSToken(token).transfer(to, amt);
+        balance[to][token] = DSToken(token).balanceOf(to);
     }
 
+    function () external payable {
+    }
     function testCalculateFee() public {
         uint valueV = 1 ether;
 
@@ -1092,10 +1230,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         
         CdcExchange(exchange).buyTokensWithFee(cdc, sentEth, cdc, uint(-1));
     }
-/*
+
     function testForFixEthBuyAllCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 41 ether;
@@ -1108,7 +1246,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixEthBuyAllCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1121,7 +1259,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixEthBuyAllCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 27 ether;
@@ -1133,7 +1271,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllEthBuyAllCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1146,7 +1284,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllEthBuyAllCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1155,10 +1293,9 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
         doExchange(sellToken, sellAmtOrId, buyToken, buyAmtOrId); 
     }
-
     function testForAllEthBuyAllCdcUserDptEnough() public {
-        userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        userDpt = 3000 ether;
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1167,10 +1304,9 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
         doExchange(sellToken, sellAmtOrId, buyToken, buyAmtOrId); 
     }
-
     function testForAllEthBuyFixCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1183,7 +1319,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllEthBuyFixCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1195,7 +1331,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllEthBuyFixCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1207,7 +1343,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixEthBuyFixCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1220,7 +1356,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixEthBuyFixCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1232,7 +1368,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixEthBuyFixCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1244,7 +1380,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testFailForFixEthBuyFixCdcUserHasNoDptSellAmtTooMuch() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 1001 ether;  // has only 1000 eth balance
@@ -1257,7 +1393,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testFailForFixEthBuyFixCdcUserHasNoDptBuyAmtTooMuch() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address buyToken = cdc;
 
@@ -1266,8 +1402,8 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testFailForFixEthBuyFixCdcUserHasNoDptBothTooMuch() public {
-        userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        userDpt = 0 ether;
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 1001 ether;
@@ -1281,7 +1417,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         uint sentEth = 1 ether;
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 11 ether;
@@ -1293,7 +1429,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixDaiBuyAllCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 41 ether;
@@ -1306,7 +1442,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixDaiBuyAllCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 17 ether;
@@ -1319,7 +1455,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixDaiBuyAllCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 27 ether;
@@ -1331,7 +1467,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllDaiBuyAllCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);
@@ -1344,7 +1480,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllDaiBuyAllCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);
@@ -1356,7 +1492,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllDaiBuyAllCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);
@@ -1368,7 +1504,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllDaiBuyFixCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);
@@ -1381,7 +1517,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllDaiBuyFixCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);
@@ -1393,7 +1529,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForAllDaiBuyFixCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);
@@ -1405,7 +1541,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixDaiBuyFixCdcUserHasNoDpt() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 17 ether;
@@ -1418,7 +1554,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixDaiBuyFixCdcUserDptNotZeroNotEnough() public {
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 17 ether;
@@ -1430,7 +1566,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testForFixDaiBuyFixCdcUserDptEnough() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 17 ether;
@@ -1442,7 +1578,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testFailForFixDaiBuyFixCdcUserHasNoDptSellAmtTooMuch() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 1001 ether;  // has only 1000 eth balance
@@ -1455,7 +1591,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testFailForFixDaiBuyFixCdcUserHasNoDptBuyAmtTooMuch() public {
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 17 ether;  // has only 1000 eth balance
@@ -1468,7 +1604,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
     function testFailForFixDaiBuyFixCdcUserHasNoDptBothTooMuch() public {
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 1001 ether;
@@ -1479,10 +1615,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixEthBuyAllCdcUserHasNoDptAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 41 ether;
@@ -1494,10 +1630,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixEthBuyAllCdcUserDptNotZeroNotEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1509,10 +1645,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixEthBuyAllCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 27 ether;
@@ -1523,10 +1659,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllEthBuyAllCdcUserHasNoDptAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1538,10 +1674,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllEthBuyAllCdcUserDptNotZeroNotEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1552,10 +1688,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllEthBuyAllCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1566,10 +1702,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllEthBuyFixCdcUserHasNoDptAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1581,10 +1717,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllEthBuyFixCdcUserDptNotZeroNotEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1595,10 +1731,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllEthBuyFixCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);
@@ -1609,10 +1745,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixEthBuyFixCdcUserHasNoDptAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1624,10 +1760,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixEthBuyFixCdcUserDptNotZeroNotEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1638,10 +1774,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixEthBuyFixCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1652,10 +1788,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testFailForFixEthBuyFixCdcUserHasNoDptSellAmtTooMuchAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 1001 ether;  // has only 1000 eth balance
@@ -1671,7 +1807,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         // if this test fails, it is because in the test testFailForFixEthBuyFixCdcUserHasNoDptBuyAmtTooMuchAllFeeInDpt ...
         // ... we do not actually buy too much, or the next test fails before the feature could be tested
 
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         uint buyAmtOrId = DSToken(cdc).balanceOf(custodian20[cdc]) + 1 ether; // more than available
         uint sellAmtOrId = wdivT(wmulV(buyAmtOrId, usdRate[cdc], cdc), usdRate[eth], eth);
@@ -1679,7 +1815,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testFailForFixEthBuyFixCdcUserHasNoDptBuyAmtTooMuchAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         uint buyAmtOrId = DSToken(cdc).balanceOf(custodian20[cdc]) + 1 ether; // more than available
         uint sellAmtOrId = wdivT(wmulV(buyAmtOrId, usdRate[cdc], cdc), usdRate[eth], eth);
@@ -1695,19 +1831,19 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         uint sellAmtOrId = DSToken(cdc).balanceOf(custodian20[cdc]) + 1 ether; // DO NOT CHANGE THIS!!!
 
         if (wdivT(wmulV(buyAmtOrId, usdRate[cdc], cdc), usdRate[eth], eth) <= sellAmtOrId) {
-            DSToken(dpt).transfer(user, userDpt);
+            sendToken(dpt, user, userDpt);
 
             doExchange(eth, sellAmtOrId, cdc, buyAmtOrId); 
         }
     }
 
     function testFailSendEthIfNoEthIsSellTokenAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         uint sentEth = 1 ether;
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 11 ether;
@@ -1718,11 +1854,11 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixDptBuyAllCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1000 ether;
+        sendToken(dpt, user, userDpt);
         uint sellDpt = 10 ether;
-        DSToken(dpt).transfer(user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = sellDpt;
@@ -1733,10 +1869,10 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForAllDptBuyAllCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1000 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = uint(-1);
@@ -1745,12 +1881,11 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
         doExchange(sellToken, sellAmtOrId, buyToken, buyAmtOrId); 
     }
-
     function testForAllDptBuyFixCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1000 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = uint(-1);
@@ -1761,11 +1896,11 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 
     function testForFixDptBuyFixCdcUserDptEnoughAllFeeInDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 1000 ether;
+        sendToken(dpt, user, userDpt);
         uint sellDpt = 10 ether;
-        DSToken(dpt).transfer(user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = sellDpt;
@@ -1794,7 +1929,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         TestFeedLike(feed[eth]).setValid(false);
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1811,7 +1946,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         TestFeedLike(feed[dpt]).setValid(false);
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1828,7 +1963,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         TestFeedLike(feed[cdc]).setValid(false);
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1845,7 +1980,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         TestFeedLike(feed[dai]).setValid(false);
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 17 ether;
@@ -1858,7 +1993,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailBuyTokensWithFeeSendZeroEth() public {
         
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         address buyToken = cdc;
@@ -1866,14 +2001,13 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
         doExchange(sellToken, 0, buyToken, buyAmtOrId); 
     }
-
     function testBuyTokensWithFeeWhenFeeIsZero() public {
 
-        CdcExchange(exchange).setConfig("fixFee", 0, "");
-        CdcExchange(exchange).setConfig("varFee", 0, "");
+        CdcExchange(exchange).setConfig("fixFee", uint(0), "");
+        CdcExchange(exchange).setConfig("varFee", uint(0), "");
 
         userDpt = 123 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 17 ether;
@@ -1882,7 +2016,6 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
 
         doExchange(sellToken, sellAmtOrId, buyToken, buyAmtOrId); 
     }
-    
     function testUpdateRates() public {
         usdRate[cdc] = 40 ether;
         usdRate[dpt] = 12 ether;
@@ -1903,7 +2036,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixEthBuyDpassUserHasNoDpt() public {
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 16.5 ether;                       
@@ -1914,7 +2047,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixEthBuyDpassUserDptNotEnough() public {
 
         userDpt = 5 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 16.5 ether;                       
@@ -1925,7 +2058,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixEthBuyDpassUserDptEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 15.65 ether;                       
@@ -1936,7 +2069,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixEthBuyDpassUserDptNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 15.65 ether;                       
@@ -1947,7 +2080,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixEthBuyDpassUserEthNotEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 10 ether;                       
@@ -1958,7 +2091,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixEthBuyDpassUserBothNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 10 ether;                       
@@ -1969,7 +2102,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForAllEthBuyDpassUserHasNoDpt() public {
 
         userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);                       
@@ -1980,7 +2113,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForAllEthBuyDpassDptNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);                       
@@ -1991,51 +2124,47 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForAllEthBuyDpassUserDptEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
     function testForFixDptBuyDpass() public {
-
+        userDpt = 1000 ether;                                
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
-        uint sellAmtOrId = 36.3 ether;                       
+        uint sellAmtOrId = 36.3 ether;                       //should be less than userDpt
 
-        userDpt = 0 ether;
-        DSToken(dpt).transfer(user, add(userDpt, sellAmtOrId));
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
     function testFailForFixDptBuyDpassUserDptNotEnough() public {
-
+        userDpt = 1000 ether;                                
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = 15.65 ether;                       
 
-        userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, add(userDpt, sellAmtOrId));
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
     function testForAllDptBuyDpass() public {
 
-        userDpt = 0 ether;                                
+        userDpt = 500 ether;                                
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = uint(-1);                       
 
-        DSToken(dpt).transfer(user, 500);
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
     function testForFixCdcBuyDpassUserHasNoDpt() public {
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.89 ether;                       
@@ -2046,7 +2175,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixCdcBuyDpassUserDptNotEnough() public {
 
         userDpt = 5 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.89 ether;                       
@@ -2057,7 +2186,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixCdcBuyDpassUserDptEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.89 ether;                       
@@ -2068,7 +2197,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixCdcBuyDpassUserDptNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.1 ether;                       
@@ -2079,7 +2208,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixCdcBuyDpassUserCdcNotEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 10 ether;                       
@@ -2090,7 +2219,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixCdcBuyDpassUserBothNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 10 ether;                       
@@ -2101,38 +2230,35 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixDpassBuyDpass() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
 
         doExchange(dpass, dpassId[user], dpass, dpassId[seller]); 
     }
-
     function testForAllCdcBuyDpassUserHasNoDpt() public {
 
         userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = uint(-1);                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
     function testForAllCdcBuyDpassDptNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = uint(-1);                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
     function testForAllCdcBuyDpassUserDptEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = uint(-1);                       
@@ -2142,7 +2268,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixDaiBuyDpassUserHasNoDpt() public {
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 13.94 ether;                                 // the minimum value user has to pay
@@ -2153,7 +2279,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixDaiBuyDpassUserDptNotEnough() public {
 
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 13.94 ether;                       
@@ -2164,29 +2290,27 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForFixDaiBuyDpassUserDptEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 13.94 ether;                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
     function testFailForFixDaiBuyDpassUserDptNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
-        uint sellAmtOrId = 25.1 ether;                       
+        uint sellAmtOrId = 13.55 ether;                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
     function testFailForFixDaiBuyDpassUserDaiNotEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 10 ether;                       
@@ -2197,7 +2321,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testFailForFixDaiBuyDpassUserBothNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 10 ether;                       
@@ -2208,7 +2332,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForAllDaiBuyDpassUserHasNoDpt() public {
 
         userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);                       
@@ -2219,7 +2343,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForAllDaiBuyDpassDptNotEnough() public {
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);                       
@@ -2230,7 +2354,7 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     function testForAllDaiBuyDpassUserDptEnough() public {
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);                       
@@ -2239,23 +2363,23 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
     }
 //-------------------new--------------------------------------------------
 
-    function testForFixEthBuyDpassUserHasNoDpt() public {
-        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(true), "", "");
+    function testForFixEthBuyDpassUserHasNoDptFullFeeDpt() public {
+        CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 16.5 ether;                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-    function testForFixEthBuyDpassUserDptNotEnough() public {
+    function testForFixEthBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
         userDpt = 5 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 14.2 ether;                       
@@ -2263,12 +2387,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForFixEthBuyDpassUserDptEnough() public {
+    function testForFixEthBuyDpassUserDptEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 6.4 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 13.73 ether;                       
@@ -2276,12 +2400,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixEthBuyDpassUserDptNotEnough() public {
+    function testFailForFixEthBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 13.73 ether;                       
@@ -2289,12 +2413,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixEthBuyDpassUserEthNotEnough() public {
+    function testFailForFixEthBuyDpassUserEthNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 10 ether;                       
@@ -2302,12 +2426,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixEthBuyDpassUserBothNotEnough() public {
+    function testFailForFixEthBuyDpassUserBothNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = 13.72 ether;                       
@@ -2315,12 +2439,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllEthBuyDpassUserHasNoDpt() public {
+    function testForAllEthBuyDpassUserHasNoDptFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);                       
@@ -2328,12 +2452,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllEthBuyDpassDptNotEnough() public {
+    function testForAllEthBuyDpassDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);                       
@@ -2341,12 +2465,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllEthBuyDpassUserDptEnough() public {
+    function testForAllEthBuyDpassUserDptEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
         uint sellAmtOrId = uint(-1);                       
@@ -2354,51 +2478,46 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForFixDptBuyDpass() public {
+    function testForFixDptBuyDpassFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
-
+        userDpt = 1000 ether;                                
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = 36.3 ether;                       
 
-        userDpt = 0 ether;
-        DSToken(dpt).transfer(user, add(userDpt, sellAmtOrId));
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixDptBuyDpassUserDptNotEnough() public {
+    function testFailForFixDptBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
-
+        userDpt = 1000 ether;                                
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = 15.65 ether;                       
 
-        userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, add(userDpt, sellAmtOrId));
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
-    function testForAllDptBuyDpass() public {
+    function testForAllDptBuyDpassFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
-
-        userDpt = 0 ether;                                
+        userDpt = 500 ether;                                // should not change this value
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dpt;
         uint sellAmtOrId = uint(-1);                       
 
-        DSToken(dpt).transfer(user, 500);
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-
-    function testForFixCdcBuyDpassUserHasNoDpt() public {
+    function testForFixCdcBuyDpassUserHasNoDptFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.89 ether;                       
@@ -2406,12 +2525,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForFixCdcBuyDpassUserDptNotEnough() public {
+    function testForFixCdcBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 5 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.89 ether;                       
@@ -2419,12 +2538,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForFixCdcBuyDpassUserDptEnough() public {
+    function testForFixCdcBuyDpassUserDptEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.89 ether;                       
@@ -2432,12 +2551,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixCdcBuyDpassUserDptNotEnough() public {
+    function testFailForFixCdcBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 25.1 ether;                       
@@ -2445,12 +2564,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixCdcBuyDpassUserCdcNotEnough() public {
+    function testFailForFixCdcBuyDpassUserCdcNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 10 ether;                       
@@ -2458,12 +2577,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixCdcBuyDpassUserBothNotEnough() public {
+    function testFailForFixCdcBuyDpassUserBothNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = 10 ether;                       
@@ -2471,23 +2590,23 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixDpassBuyDpass() public {
+    function testFailForFixDpassBuyDpassFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
 
         doExchange(dpass, dpassId[user], dpass, dpassId[seller]); 
     }
 
-    function testForAllCdcBuyDpassUserHasNoDpt() public {
+    function testForAllCdcBuyDpassUserHasNoDptFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = uint(-1);                       
@@ -2495,12 +2614,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllCdcBuyDpassDptNotEnough() public {
+    function testForAllCdcBuyDpassDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = uint(-1);                       
@@ -2508,24 +2627,24 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllCdcBuyDpassUserDptEnough() public {
+    function testForAllCdcBuyDpassUserDptEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
         uint sellAmtOrId = uint(-1);                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-    function testForFixDaiBuyDpassUserHasNoDpt() public {
+    function testForFixDaiBuyDpassUserHasNoDptFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 0 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 13.94 ether;                                 // the minimum value user has to pay
@@ -2533,12 +2652,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForFixDaiBuyDpassUserDptNotEnough() public {
+    function testForFixDaiBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 13.94 ether;                       
@@ -2546,12 +2665,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForFixDaiBuyDpassUserDptEnough() public {
+    function testForFixDaiBuyDpassUserDptEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 13.94 ether;                       
@@ -2559,25 +2678,24 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixDaiBuyDpassUserDptNotEnough() public {
+    function testFailForFixDaiBuyDpassUserDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
-
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
-        uint sellAmtOrId = 25.1 ether;                       
+        uint sellAmtOrId = 13.55 ether;                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixDaiBuyDpassUserDaiNotEnough() public {
+    function testFailForFixDaiBuyDpassUserDaiNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 10 ether;                       
@@ -2585,12 +2703,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testFailForFixDaiBuyDpassUserBothNotEnough() public {
+    function testFailForFixDaiBuyDpassUserBothNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = 10 ether;                       
@@ -2598,12 +2716,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllDaiBuyDpassUserHasNoDpt() public {
+    function testForAllDaiBuyDpassUserHasNoDptFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 0 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);                       
@@ -2611,12 +2729,12 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllDaiBuyDpassDptNotEnough() public {
+    function testForAllDaiBuyDpassDptNotEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
 
         userDpt = 1 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);                       
@@ -2624,17 +2742,15 @@ contract CdcExchangeTest is DSTest, DSMath, CdcExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
 
-    function testForAllDaiBuyDpassUserDptEnough() public {
+    function testForAllDaiBuyDpassUserDptEnoughFullFeeDpt() public {
         CdcExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
 
-
         userDpt = 1.812 ether;                                
-        DSToken(dpt).transfer(user, userDpt);
+        sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
         uint sellAmtOrId = uint(-1);                       
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]); 
     }
-    */
 }
