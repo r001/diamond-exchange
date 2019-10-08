@@ -5,6 +5,7 @@ import "ds-auth/auth.sol";
 import "ds-token/token.sol";
 import "ds-stop/stop.sol";
 import "ds-note/note.sol";
+import "./Liquidity.sol";
 
 
 /**
@@ -71,7 +72,7 @@ contract TrustedErc20 {
  * @title Cdc
  * @dev Cdc Exchange contract.
  */
-contract CdcExchangeEvents {
+contract DiamondExchangeEvents {
     event LogBuyTokenWithFee(
         uint256 indexed txId,
         address indexed sender,
@@ -88,15 +89,10 @@ contract CdcExchangeEvents {
 
     event LogTransferEth(address src, address dst, uint256 val);
 
-    // TODO: remove all following LogTest()
-    event LogTest(uint256 what);
-    event LogTest(bool what);
-    event LogTest(address what);
-    event LogTest(bytes32 what);
 }
 
 // TODO: wallet functionality, proxy Contracts
-contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
+contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
     TrustedDsToken public cdc;                              // CDC token contract
     address public dpt;                                     // DPT token contract
     TrustedErc721 public dpass;                             // DPASS default token address
@@ -115,7 +111,7 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
 
     TrustedFeeCalculator public fca;        // fee calculator contract
 
-    address public liq;                     // contract providing DPT liquidity to pay for fee
+    address payable public liq;             // contract providing DPT liquidity to pay for fee
     address payable public wal;             // wallet address, where we keep all the tokens we received as fee
     address payable public burner;          // contract where accured fee of DPT is stored before being burned
     TrustedAssetManagement public asm;      // Asset Management contract
@@ -125,8 +121,13 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
     uint256 public callGas = 2500;          // using this much gas when Ether is transferred
     uint256 public txId;                    // Unique id of each transaction.
     bool public takeProfitOnlyInDpt = true; // If true, it takes cost + profit in DPT, if false only profit in DPT
+
     uint256 public dust = 10000;            // Numbers below this amount are considered 0. Can only be used ...
                                             // ... along with 18 decimal precisions numbers.
+
+    bool liqBuysDpt;                        // if true then liq contract is called directly to buy necessary dpt, otherwise we...
+                                            // ... just send DPT from liq contracts address to burner.
+
     bool locked;                            // protect against reentrancy attacks
     address eth = address(0xee);            // to handle ether the same way as tokens we associate a fake address to it
 
@@ -221,10 +222,6 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
             buyToken,
             buyAmtOrId);
 
-            emit LogTest("buyV");
-            emit LogTest(buyV);
-            emit LogTest("sellV");
-            emit LogTest(sellV);
         (sellT, buyT) = takeFee(                        // takes the calculated fee from user in DPT or sellToken ...
             feeV,                                       // ... calculates final sell and buy values (in base currency)
             sellV,
@@ -234,8 +231,6 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
             buyToken,
             buyAmtOrId);
 
-            emit LogTest("msg.sender.balance");
-            emit LogTest(msg.value);
         transferTokens(                                 // transfers tokens to user and seller
             sellT,
             buyT,
@@ -316,14 +311,28 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
 
             takeProfitOnlyInDpt = uint256(value_) > 0;
 
-        } else if (what_ == "liq") {
-
-            liq = addr(value_);
+        } else if (what_ == "liqBuysDpt") {
 
             require(liq != address(0x0), "Wrong address");
 
-            require(TrustedErc20(dpt).balanceOf(liq) > 0,
-                    "Insufficient funds of DPT");
+            Liquidity(liq).burn(dpt, burner, 0);            // check if liq does have the proper burn function
+
+            liqBuysDpt = uint256(value_) > 0;
+
+        } else if (what_ == "liq") {
+
+            liq = address(uint160(addr(value_)));
+
+            require(liq != address(0x0), "Wrong address");
+
+            require(
+                TrustedErc20(dpt).balanceOf(liq) > 0,
+                "Insufficient funds of DPT");
+
+            if(liqBuysDpt) {
+
+                Liquidity(liq).burn(dpt, burner, 0);            // check if liq does have the proper burn function
+            }
 
         } else if (what_ == "handledByAsm") {
 
@@ -745,8 +754,6 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
                 msg.sender,
                 address(uint160(custodian20[sellToken])),
                 sellT);
-            emit LogTest("msg.sender.balance");
-            emit LogTest(msg.sender.balance);
 
             asm.notifyTransferFrom(                                     // notify Asset Management contract about transfer
                 sellToken,
@@ -867,8 +874,6 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
         if (fee - feeTakenV > dust                          // if we could not take all fees from user in ...
             && fee - feeTakenV <= fee) {                    // ... DPT (with round-off errors considered)
 
-            emit LogTest("fee");
-            emit LogTest(fee);
             restFeeV = sub(fee, feeTakenV);
 
             if (canSellErc20[sellToken]) {
@@ -999,27 +1004,20 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
         if (token == dpt) {
             sendToken(dpt, src, burner, profitDpt);
 
-            emit LogTest("sub(feeT, profitDpt)");
-            emit LogTest(sub(feeT, profitDpt));
             sendToken(dpt, src, wal, sub(feeT, profitDpt));
 
         } else {
-            emit LogTest("fee");
-            emit LogTest(fee);
-            emit LogTest("feeT");
-            emit LogTest(feeT);
-            emit LogTest("totalProfitV");
-            emit LogTest(totalProfitV);
-            emit LogTest("profitPaidV");
-            emit LogTest(profitPaidV);
-            emit LogTest("profitV");
-            emit LogTest(profitV);
-            emit LogTest("profitDpt");
-            emit LogTest(profitDpt);
 
-            sendToken(dpt, liq, burner, profitDpt);                 // send profit to burner
+            if (liqBuysDpt) {
 
-            sendToken(token, src, wal, feeT);                      // send user token to wallet
+                Liquidity(liq).burn(dpt, burner, profitV);          // if liq contract buys DPT on the fly
+
+            } else {
+
+                sendToken(dpt, liq, burner, profitDpt);             // if liq contract stores DPT that can be sent to burner by us
+            }
+
+            sendToken(token, src, wal, feeT);                       // send user token to wallet
         }
     }
 
@@ -1082,22 +1080,21 @@ contract CdcExchange is DSAuth, DSStop, DSMath, CdcExchangeEvents {
         address src,
         address payable dst,
         uint256 amount
-    ) internal returns(uint256 etherSpent) {
+    ) internal returns(bool) {
         TrustedErc20 erc20 = TrustedErc20(token);
 
         if (token == eth && amount > dust) {                        // if token is Ether and amount is higher than dust limit
-
+            require(src == msg.sender || src == address(this), "Wrong src address provided");
             // TODO: do it with call.value() to use gas as needed
             dst.transfer(amount);
 
             emit LogTransferEth(src, dst, amount);
 
-            etherSpent = amount;                                    // let caller know how much ether was spent
-
         } else {
 
             if (amount > 0) erc20.transferFrom(src, dst, amount);   // transfer all of token to dst
         }
+        return true;
     }
 }
 
