@@ -1,4 +1,4 @@
-pragma solidity ^0.4.25;
+pragma solidity ^0.5.11;
 
 import "ds-test/test.sol";
 import "ds-token/token.sol";
@@ -32,21 +32,21 @@ contract BurnerTest is DSTest {
 
     function testValidBurn() public {
         uint sentAmount = 250;
-        token.transfer(burner, sentAmount);
+        token.transfer(address(burner), sentAmount);
         burner.burn(sentAmount);
         assertEq(token.totalSupply(), initialBalance - sentAmount);
     }
 
     function testValidAllBurn() public {
         uint sentAmount = 250;
-        token.transfer(burner, sentAmount);
+        token.transfer(address(burner), sentAmount);
         burner.burnAll();
         assertEq(token.totalSupply(), initialBalance - sentAmount);
     }
 
     function testReturnToOwner() public {
         uint sentAmount = 250;
-        token.transfer(burner, sentAmount);
+        token.transfer(address(burner), sentAmount);
         burner.returnToOwner(sentAmount);
         assertEq(token.totalSupply(), initialBalance);
         assertEq(token.balanceOf(burner.owner()), initialBalance);
