@@ -1,6 +1,6 @@
-# Diamond network CDC token Smart Contract
+# CDiamondcoin Diamond Exchange Smart Contract
 
-One of the main purposes of [Diamond Network Project](https://cdiamondcoin.com/) is to create a diamond backed stable coin. To use the services of the platform you will need a utility token called [DPT](https://github.com/Cdiamondcoin/dpt-token) - Diamond Platform Token. Current repository contains the [ERC20](https://github.com/ethereum/EIPs/issues/20) compatible smart contract of CDC token, and also the smart contract supporting the Exchange of CDC.
+One of the main goal of [Diamond Network Project](https://cdiamondcoin.com/) is to create a diamond backed stable coin. In order to enable this an exchange is needed where users can buy and sell their diamonds on the chain while the physical diamonds are sored in safe and regularly audited sotres. This smart contract can handle both investment diamonds and the CDC stablecoin. 
 
 ## Prerequisities
 
@@ -15,7 +15,7 @@ In order to compile smart contracts you need to install [Dapphub](https://dapphu
 
 ## Use custom version of solidity compiler
 
-`dapp --use solc:0.4.25 build`
+`dapp --use solc:0.5.11 build`
 
 ## Building smart contracts
 
@@ -29,16 +29,13 @@ As a result of installation .abi and .bin files will be created in `cdc-token/ou
 
 | Command | Description |
 | --- | --- |
-|`git clone https://github.com/Cdiamondcoin/cdc-token.git` | Clone the smart contract code.|
-|`cd cdc-token && git submodule update --init --recursive` | Update libraries to the latest version.|
+|`git clone https://github.com/Cdiamondcoin/diamond-exchange.git` | Clone the smart contract code.|
+|`cd diamond-exchange && git submodule update --init --recursive` | Update libraries to the latest version.|
 |`dapp test` | Compile and test the smart contracts.|
 
 ## Deploying smart contracts
 
-In order to deploy smart contracts you need to do the followings.
-- Deploy `cdc-token/out/Cdc.abi` `cdc-token/out/Cdc.bin` to install cdc token.
-- Deploy `cdc-token/out/CdcExchange.abi` `cdc-token/out/CdcExchange.bin` to install Cdc Exchange smart contract.
-- Lets assume `Cdc` is the address of CDC token, and `Exchange` is the address of Exchange smart contract. Execute as owner `(Cdc).approve(Exchange, uint(-1))` to enable for Exchange smart contract to manipulate CDC tokens.
+TBD.
 
 ## Authors
 
