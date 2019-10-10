@@ -16,6 +16,15 @@ contract TrustedFeedLike {
 }
 
 
+
+/**
+* @dev Contract to get ETH/USD price
+*/
+contract TrustedKycLike {
+    function isEnabled(address user) external view returns (bool);
+}
+
+
 contract TrustedDSAuthority is DSAuthority {
     function stub() external;
 }
@@ -114,6 +123,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
     address payable public liq;             // contract providing DPT liquidity to pay for fee
     address payable public wal;             // wallet address, where we keep all the tokens we received as fee
     address payable public burner;          // contract where accured fee of DPT is stored before being burned
+    address public kyc;                     // contract where the kyc'd users addresses are stored
     TrustedAssetManagement public asm;      // Asset Management contract
     uint256 public fixFee;                  // Fixed part of fee charged for buying 18 decimals precision in base currency
     uint256 public varFee;                  // Variable part of fee charged for buying 18 decimals precision in base currency
@@ -130,6 +140,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
 
     bool locked;                            // protect against reentrancy attacks
     address eth = address(0xee);            // to handle ether the same way as tokens we associate a fake address to it
+    bool kycEnabled;                        // if true then user must be on the kyc list in order to use the system
 
     constructor(
         address cdc_,
@@ -183,6 +194,11 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
         locked = false;
     }
 
+    modifier kycCheck {
+        require(!kycEnabled || TrustedKycLike(kyc).isEnabled(msg.sender), "You are not on KYC list");
+        _;
+    }
+
     /**
     * @dev Fallback function to buy tokens.
     */
@@ -199,7 +215,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
         uint256 sellAmtOrId,
         address buyToken,
         uint256 buyAmtOrId
-    ) public payable stoppable nonReentrant {
+    ) public payable stoppable nonReentrant kycCheck {
         uint buyV;
         uint sellV;
         uint feeV;
@@ -423,6 +439,10 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
             require(addr(value_) != address(0x0), "Wrong address");
 
             dpass = TrustedErc721(addr(value_));
+
+        } else if (what_ == "kycEnabled") {
+
+            kycEnabled = uint(value_) > 0;
 
         } else if (what_ == "dpt") {
 
