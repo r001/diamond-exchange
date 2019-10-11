@@ -444,6 +444,13 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
 
             kycEnabled = uint(value_) > 0;
 
+        } else if (what_ == "kyc") {
+
+            kyc = addr(value_);
+
+            require(kyc != address(0x0), "Wrong address");
+
+            TrustedKycLike(kyc).isEnabled(address(0));              // check if kyc contract does have the proper function
         } else if (what_ == "dpt") {
 
             require(addr(value_) != address(0x0), "Wrong address");
