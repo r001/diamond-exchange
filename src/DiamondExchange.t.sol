@@ -511,13 +511,15 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         dpassId[user] = Dpass(dpass).mintDiamondTo(
             user,                                                               // address _to,
+            asm,                                                                // address _custodian
             "gia",                                                              // bytes32 _issuer,
             "2141438167",                                                       // bytes32 _report,
             dpassOwnerPrice,                                                    // uint _ownerPrice,
             139 ether,                                                          // uint _marketplacePrice,
             "sale",                                                             // bytes32 _state,
             attributes,// bytes32[] memory _attributes,
-            bytes32(uint(0xc0a5d062e13f99c8f70d19dc7993c2f34020a7031c17f29ce2550315879006d7)) // bytes32 _attributesHash
+            bytes32(uint(0xc0a5d062e13f99c8f70d19dc7993c2f34020a7031c17f29ce2550315879006d7)), // bytes32 _attributesHash
+            "20191101"
         );
         TrustedASMTester(asm).setPrice(dpass, dpassId[user], dpassOwnerPrice);
         DiamondExchangeTester(user).doApprove721(dpass, exchange, dpassId[user]);
@@ -531,14 +533,16 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         attributes1[4] = "";
 
         dpassId[seller] = Dpass(dpass).mintDiamondTo(
-            seller,                                                        // address _to,
+            seller,                                                             // address _to,
+            asm,                                                                // address _custodian,
             "gia",                                                              // bytes32 _issuer,
             "2141438168",                                                       // bytes32 _report,
             dpassOwnerPrice,                                                    // uint _ownerPrice,
             109 ether,                                                          // uint _marketplacePrice,
             "sale",                                                             // bytes32 _state,
-            attributes,                                  // bytes32[] memory _attributes,
-            bytes32(0xac5c1daab5131326b23d7f3a4b79bba9f236d227338c5b0fb17494defc319886)  // bytes32 _attributesHash
+            attributes,                                                         // bytes32[] memory _attributes,
+            bytes32(0xac5c1daab5131326b23d7f3a4b79bba9f236d227338c5b0fb17494defc319886), // bytes32 _attributesHash
+            "20191101"
         );
 
         TrustedASMTester(asm).setPrice(dpass, dpassId[seller], dpassOwnerPrice);
@@ -1883,7 +1887,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         uint buyAmtOrId = uint(-1);
 
         // DiamondExchange(exchange).buyTokensWithFee(sellToken, sellAmtOrId, buyToken, buyAmtOrId);
-        // doExchange(sellToken, sellAmtOrId, buyToken, buyAmtOrId);
+        doExchange(sellToken, sellAmtOrId, buyToken, buyAmtOrId);
     }
     function testForAllDptBuyFixCdcUserDptEnoughAllFeeInDpt() public {
         DiamondExchange(exchange).setConfig("takeProfitOnlyInDpt", b32(false), "");
