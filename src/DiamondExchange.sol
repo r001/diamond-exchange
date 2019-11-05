@@ -55,11 +55,9 @@ contract TrustedDsToken {
 
 contract TrustedAsm {
     function notifyTransferFrom(address token, address src, address dst, uint256 id721) external;
-    function getPrice(TrustedErc721 erc721, uint256 id721, bool sellOrBuy) external view returns(uint256);
+    function getBasePrice(address erc721, uint256 id721) external view returns(uint256);
     function getAmtForSale(address token) external view returns(uint256);
     function mint(address token, address dst, uint256 amt) external;
-    function isOwnerOf(address buyToken) external view returns(bool);
-
 }
 
 
@@ -119,6 +117,9 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
     mapping(address => bool) public decimalsSet;            // stores if decimals were set for ERC20 token
     mapping(address => address payable) public custodian20; // custodian that holds an ERC20 token for Exchange
     mapping(address => bool) public handledByAsm;           // defines if token is managed by Asset Management
+    mapping(
+        address => mapping(
+            uint => uint)) public sellPrice;                // sellPrice[token][tokenId] price of dpass token defined by owner of dpass token
 
     TrustedFeeCalculator public fca;        // fee calculator contract
 
@@ -126,7 +127,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
     address payable public wal;             // wallet address, where we keep all the tokens we received as fee
     address payable public burner;          // contract where accured fee of DPT is stored before being burned
     address public kyc;                     // contract where the kyc'd users addresses are stored
-    TrustedAsm public asm;      // Asset Management contract
+    TrustedAsm public asm;                  // Asset Management contract
     uint256 public fixFee;                  // Fixed part of fee charged for buying 18 decimals precision in base currency
     uint256 public varFee;                  // Variable part of fee charged for buying 18 decimals precision in base currency
     uint256 public profitRate;              // the percentage of profit that is burned on all fees received. 18 decimals precision
@@ -497,6 +498,38 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
 
 
     /**
+    * @dev Get sell price of dpass token
+    */
+    function getSellPrice(address token, uint256 tokenId) public view returns(uint256) {
+        require(canSellErc721[token], "Token not for sale");
+        return sellPrice[token][tokenId];
+    }
+
+    /**
+    * @dev Get sell price of dpass token if price 0 return 
+    */
+    function setSellPrice(address token, uint256 tokenId, uint256 price) public {
+        require(canSellErc721[token], "Token not for sale");
+        require(TrustedErc721(token).ownerOf(tokenId) == msg.sender, "Not authorized");
+        sellPrice[token][tokenId] = price;
+    }
+
+    /**
+    * @dev Get price of dpass token 
+    */
+    function getPrice(address token, uint256 tokenId) public view returns(uint256) {
+        uint basePrice;
+        require(canSellErc721[token], "Token not for sale");
+        if(sellPrice[token][tokenId] == 0) {
+            basePrice = asm.getBasePrice(token, tokenId);
+            require(basePrice != 0, "Zero price not allowed");
+            return basePrice;
+        } else {
+            return sellPrice[token][tokenId];
+        }
+    }
+
+    /**
     * @dev Get exchange rate in base currency
     */
     function getLocalRate(address token) public view auth returns(uint256) {
@@ -745,7 +778,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
 
         } else if (canSellErc721[sellToken]) {                          // if sellToken is a valid ERC721 token
 
-            sellV = asm.getPrice(TrustedErc721(sellToken), sellAmtOrId, true); // get price from Asset Management
+            sellV = getPrice(sellToken, sellAmtOrId);                   // get price from Asset Management
 
         } else {
 
@@ -756,7 +789,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
         if (canBuyErc20[buyToken]) {                                    // if buyToken is a valid ERC20 token
 
             maxT = handledByAsm[buyToken] ?                             // set buy amount to maxT possible
-                asm.getAmtForSale(buyToken) :             // if managed by asset management get available
+                asm.getAmtForSale(buyToken) :                           // if managed by asset management get available
                 min(                                                    // if not managed by asset management get maxT available
                     TrustedErc20(buyToken).balanceOf(
                         custodian20[buyToken]),
@@ -765,7 +798,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
 
             require(maxT > 0, "0 token is for sale");
 
-            require(                                                    // require token's buy amount to be less or equal than avaulable to us
+            require(                                                    // require token's buy amount to be less or equal than available to us
                 sellToken == eth ||                                     // disregard Ether
                 buyAmtOrId == uint(-1) ||                               // disregard uint(-1) as it has a special meaning
                 buyAmtOrId <= maxT,                                     // amount must be less or equal that maxT available
@@ -783,10 +816,9 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
             require(canSellErc20[sellToken],                            // require that at least one of sell and buy token is ERC20
                     "One of tokens must be erc20");
 
-            buyV = asm.getPrice(                                        // calculate price with Asset Management contract
-                TrustedErc721(buyToken),
-                buyAmtOrId,
-                false);
+            buyV = getPrice(                                            // calculate price with Asset Management contract
+                buyToken,
+                buyAmtOrId);
 
         } else {
             require(false, "Token not allowed to be bought");           // token can not be bought here
@@ -838,7 +870,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
                                        msg.sender,
                                        buyAmtOrId);
 
-                TrustedErc721(buyToken)                                 // transfer buyToken from custodian20 to user
+                TrustedErc721(buyToken)                                 // transfer buyToken from custodian to user
                 .transferFrom(
                     payTo,
                     msg.sender,
@@ -892,6 +924,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
                                sellT);
 
         logTrade(sellToken, sellT, buyToken, buyT, buyAmtOrId, feeV);
+        // TODO: change so that asset management will be the owner of 
     }
 
     /*

@@ -15,14 +15,6 @@ contract TrustedFeedLike {
 }
 
 
-contract TrustedDsToken {
-    function transferFrom(address src, address dst, uint wad) external returns (bool);
-    function totalSupply() external view returns (uint);
-    function balanceOf(address src) external view returns (uint);
-    function allowance(address src, address guy) external view returns (uint);
-}
-
-
 contract TrustedErc721 {
     function transferFrom(address src, address to, uint256 amt) external;
     function ownerOf(uint256 tokenId) external view returns (address);
@@ -40,6 +32,7 @@ contract TrustedCustodianLike {
     function removeAddress(address src) external; // removes address that could control Custodian contract
     function addAddress(address src) external; // adds address that could control Custodian contract
 }
+
 /**
  * @title Cdc
  * @dev Cdc Exchange contract.
@@ -89,8 +82,9 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     mapping(address => bool) custodianCandidates;           // returns true for asset managers
     mapping(address => bool) custodians;                    // returns true for custodians
     mapping(address => bool) oracles;                       // returns true for oracles
-    mapping(address => bool) auditors;                       // returns true for auditors
+    mapping(address => bool) auditors;                      // returns true for auditors
     mapping(address => bool) dpasses;                       // returns true for dpass tokens allowed in this contract
+    mapping(address => bool) dcdcs;                         // returns true for tokens representing cdc assets (without gia number) that are allowed in this contract
     mapping(address => bool) cdcs;                          // returns true for cdc tokens allowed in this contract
     mapping(address => bool) payTokens;                     // returns true for tokens allowed to make payment to custodians with
     mapping(bytes32 => bool) issuers;                       // returns true for valid issuers for dpass
@@ -100,13 +94,13 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         bool => mapping(
             uint24 => mapping(
                 bytes1 => mapping(
-                    bytes4 => uint)))) basePrice;               // price based on cut, clarity, color
+                    bytes4 => uint)))) basePrice;           // price based on cut, clarity, color, carat
     mapping(
         address => mapping(
             bool => mapping(
                 uint24 => mapping(
                     bytes1 => mapping(
-                        bytes4 => uint))))) priceCust;          // price based on cut, clarity, color
+                        bytes4 => uint))))) priceCust;      // price based on cut, clarity, color, carat
     mapping(
         bool => mapping(
             uint24 => mapping(
@@ -119,10 +113,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                     bytes1 => mapping(
                         bytes4 => uint))))) weightCust;     // total weight of all diamonds in our storage belonging to this customer, cut,clarity,color
     mapping(bytes32 => bool) shapes;                        // returns true for valid shapes
-    mapping(bytes1 => bool) colors;                        // returns true for valid colors
-    mapping(bytes4 => bool) clarities;                     // returns true for valid clarities
-    mapping(uint24 => uint24) weightEnds;                    // returns the end of weight range with 2 decimals precision when calculating price
-    mapping(address => bool) removed;                      // returns true if custodian exited the system.
+    mapping(bytes1 => bool) colors;                         // returns true for valid colors
+    mapping(bytes4 => bool) clarities;                      // returns true for valid clarities
+    mapping(uint24 => uint24) weightEnds;                   // returns the end of weight range with 2 decimals precision when calculating price
+    mapping(address => bool) removed;                       // returns true if custodian exited the system.
     mapping(
         address => mapping(
             address => mapping(
@@ -149,9 +143,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                                                             // ... check if they went into red flag.
     mapping(address => address) public priceFeed;           // price feed address for token
     mapping(address => uint) public cdcValues;              // base currency value of cdc token
+    mapping(address => uint) public dcdcValues;             // base currency value of dcdc token
 
     mapping(address => uint)                                // total base currency value of custodians collaterals
-        public totalCollateralCustV;
+        public totalDpassCustV;
 
     mapping(address => uint) public totalDpassSoldV;        // the total value of dpass tokens sold by custodian
 
@@ -204,39 +199,41 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         uint next;
     }
 
-    uint24 public weightRangeStart;                     // the smallest weight value we have price data for
-    uint public minimumValid = 7 * 24 * 60 * 60;        // minimum this many seconds the redeem fee offer must be valid, default is one week
-    uint8 public systemFlag;                                   // if system is overcollaterized than systemFlag is green, if ...
-                                                        // ... total cdc value is more than free collateral than red, ...
-                                                        // ... if cdc value is more than collateral * overCollRatio then yellow
+    uint24 public weightRangeStart;                         // the smallest weight value we have price data for
+    uint public minimumValid = 7 * 24 * 60 * 60;            // minimum this many seconds the redeem fee offer must be valid, default is one week
+    uint8 public systemFlag;                                // if system is overcollaterized than systemFlag is green, if ...
+                                                            // ... total cdc value is more than free collateral than red, ...
+                                                            // ... if cdc value is more than collateral * overCollRatio then yellow
 
-    uint8 public green = 0;                             // used with 'flag' denotes everything okay
-    uint8 public yellow = 1;                            // used with 'flag' denotes non-critical problem with custodian
-    uint8 public red = 2;                               // used with 'flag' denotes critical problem with custodian ...
-                                                        // ... collaterals are subtracted from system, transfers disabled
+    uint8 public green = 0;                                 // used with 'flag' denotes everything okay
+    uint8 public yellow = 1;                                // used with 'flag' denotes non-critical problem with custodian
+    uint8 public red = 2;                                   // used with 'flag' denotes critical problem with custodian ...
+                                                            // ... collaterals are subtracted from system, transfers disabled
 
-    bool public locked;                                 // used to make sure that functions are non reentrant
-    address public auditCustodian;                      // last checked custodian for audit
-    uint public priceMultiplierMp = 1 ether;            // the marketplace price is multiplied with this value to get final price
-    uint public priceMultiplierRa = 1 ether;            // the default marketplace price is base price times priceMultiplierRa
-    uint public insaneChangeRateMin = 0.5 ether;        // the minimum rate of change in marketprice multiplier
-    uint public insaneChangeRateMax = 1.5 ether;        // the maximum rate of change in marketprice multiplier
-    address public currCdc;                             // the current cdc token to update the price for
-    uint public overCollRatio = 1.1 ether;              // the totalCollateralV >= overCollRatio * totalCdcV
-    uint public totalCdcV;                              // total value of all cdc tokens
-    uint public allowedCdcMintValueCalc;                // calculated approximate value of total cdc tokens that can be minted
-    uint public totalCollateralV;                       // total value of collaterals in base currency
-    bool public assetMgrCanSetCollateralValue;          // config parameter if true asset manager can call the ...
-                                                        // ... updateCustodianValue(custodian, value) ...
-                                                        // ... function, meaning he can update manually what ...
-                                                        // ... proportion each custodian gets from selling a CDC token
+    bool public locked;                                     // used to make sure that functions are non reentrant
+    address public auditCustodian;                          // last checked custodian for audit
+    uint public priceMultiplierMp = 1 ether;                // the marketplace price is multiplied with this value to get final price
+    uint public priceMultiplierRa = 1 ether;                // the default marketplace price is base price times priceMultiplierRa
+    uint public insaneChangeRateMin = 0.5 ether;            // the minimum rate of change in marketprice multiplier
+    uint public insaneChangeRateMax = 1.5 ether;            // the maximum rate of change in marketprice multiplier
+    address public currCdc;                                 // the current cdc token to update the price for
+    address public currDcdc;                                // the current dcdc token to update the price for
+    uint public overCollRatio = 1.1 ether;                  // the totalDpassV >= overCollRatio * totalCdcV
+    uint public totalCdcV;                                  // total value of all cdc tokens
+    uint public allowedCdcMintValueCalc;                    // calculated approximate value of total cdc tokens that can be minted
+    uint public totalDpassV;                           // total value of collaterals in base currency
+    bool public assetMgrCanSetCollateralValue;              // config parameter if true asset manager can call the ...
+                                                            // ... updateCustodianValue(custodian, value) ...
+                                                            // ... function, meaning he can update manually what ...
+                                                            // ... proportion each custodian gets from selling a CDC token
 
-    uint public dust = 1000;                            // dust value is the largest value we still consider 0 ...
-                                                        // ... because of round-off errors, only to be used with 18 digit precision numbers
-    uint yellowFlagInterval = 3 * 30 * 24 * 60 * 60;    // 3 months max must be between audits, if more, custodian gets yellow flag.
-    uint redFlagInterval = 6 * 30 * 24 * 60 * 60;       // if even after 6 months there was no audit, custodian gets red flag, his diamonds can not be transfered, and his collateral is discounted from system.
-    address eth = address(0xee);                        // address of imaginary eth token we use to handle ...
-                                                        // ... eth the same way as erc20 tokens
+    uint public dust = 1000;                                // dust value is the largest value we still consider 0 ...
+                                                            // ... because of round-off errors, only to be used with 18 digit precision numbers
+    uint yellowFlagInterval = 3 * 30 * 24 * 60 * 60;        // 3 months max must be between audits, if more, custodian gets yellow flag.
+    uint redFlagInterval = 6 * 30 * 24 * 60 * 60;           // if even after 6 months there was no audit, custodian gets red flag, his ...
+                                                            // ... diamonds can not be transfered, and his collateral is discounted from system.
+    address eth = address(0xee);                            // address of imaginary eth token we use to handle ...
+                                                            // ... eth the same way as erc20 tokens
 //declarations----------------------------------------------------------------
 
     constructor() public {
@@ -346,6 +343,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         return dpasses[dpass];
     }
 
+    function isDcdc(address dcdc) public view returns(bool) {
+        return dcdcs[dcdc];
+    }
+
     function isCdc(address cdc) public view returns(bool) {
         return cdcs[cdc];
     }
@@ -375,8 +376,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         return priceCust[custodian][roundOrPear][caratRange][color][clarity];
     }
 
-    function getPrice(TrustedErc721 erc721, uint256 id721, bool sell) public view returns (uint256 price) {
+    function getPrice(TrustedErc721 erc721, uint256 id721) public view returns (uint256 price) {
+        address owner;
         require(dpasses[address(erc721)], "asm-not-a-dpass-token");
+        owner = erc721.getOwner(id721);
 
         (,,
          uint ownerPrice,
@@ -388,7 +391,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
 
         require(state != "invalid", "asm-token-should-be-valid");
 
-        if(ownerPrice == 0 || sell) {
+        if(ownerPrice == 0 || custodians[owner]) {
             if(marketplacePrice == 0) {
                 (,,,,,price) = getAttributes(attributeValues);
                 price = wmul(price, priceMultiplierRa);
@@ -470,7 +473,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     * @dev Retrieve the decimals of a token
     */
     function getDecimals(address token_) public view returns (uint8 dec) {
-        require(cdcs[token_], "asm-token-not-listed");
+        require(cdcs[token_] || payTokens[token_] || dcdcs[token_], "asm-token-not-listed");
         require(decimalsSet[token_], "asm-token-with-unset-decimals");
         while(dec <= 77 && decimals[token_] % uint(10) ** dec == 0){
             dec++;
@@ -517,9 +520,14 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         return cdcValues[cdc];
     }
 
-    function getTotalCollateralCustV(address custodian) public view returns(uint256) {
+    function getDcdcValues(address dcdc) public view returns(uint256) {
+        require(dcdcs[dcdc], "asm-token-not-listed");
+        return dcdcValues[dcdc];
+    }
+
+    function getTotalDpassCustV(address custodian) public view returns(uint256) {
         require(custodians[custodian], "asm-not-a-custodian");
-        return totalCollateralCustV[custodian];
+        return totalDpassCustV[custodian];
     }
 
     function getDpassSoldV(address custodian, address token) public view returns(uint256) {
@@ -549,7 +557,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     }
 
     function isManualRate(address token) public view returns(bool) {
-        require(payTokens[token] || cdcs[token], "asm-token-not-listed");
+        require(payTokens[token] || cdcs[token] || dcdcs[token], "asm-token-not-listed");
         return manualRate[token];
     }
 
@@ -604,10 +612,24 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         if (what_ == "dpasses") {
             require(addr(value_) != address(0), "asm-dpass-address-zero");
             dpasses[addr(value_)] = uint(value1_) > 0;
+            // TODO: update collateral values
+        } else if (what_ == "dcdcs") {
+            address newDcdc = addr(value_);
+            require(priceFeed[newDcdc] != address(0), "asm-add-pricefeed-first");
+            require(newDcdc != address(0), "asm-dcdc-address-zero");
+            dcdcs[newDcdc] = uint(value1_) > 0;
+            if(currDcdc == address(0)) {  	// TODO: does not work when value1_ == false
+                currDcdc = newDcdc;		// TODO: implement removal of entries
+                next[currDcdc] = currDcdc;
+            } else {
+                next[newDcdc] = next[currDcdc];
+                next[currDcdc] = newDcdc;
+            }
+            updateDcdcValue(newDcdc);
         } else if (what_ == "cdcs") {
             address newCdc = addr(value_);
+            require(priceFeed[newCdc] != address(0), "asm-add-pricefeed-first");
             require(newCdc != address(0), "asm-cdc-address-zero");
-            require(newCdc != currCdc, "asm-cdc-address-no-zero");
             cdcs[newCdc] = uint(value1_) > 0;
             if(currCdc == address(0)) {
                 currCdc = newCdc;
@@ -616,12 +638,12 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                 next[newCdc] = next[currCdc];
                 next[currCdc] = newCdc;
             }
-            _updateCdcValue(newCdc);
+            updateCdcValue(newCdc);
         } else if (what_ == "rate") {
             address token = addr(value_);
             uint256 value = uint256(value1_);
 
-            require(payTokens[token] || cdcs[token], "Token not allowed rate");
+            require(payTokens[token] || cdcs[token] || dcdcs[token], "Token not allowed rate");
 
             require(value > 0, "Rate must be greater than 0");
 
@@ -643,7 +665,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
             address auditor_ = addr(value_);
             require(auditors[auditor_], "asm-not-an-auditor");
             auditors[auditor_] = false;
-        }  else if (what_ == "payTokens") {
+        } else if (what_ == "payTokens") {
             require(addr(value_) != address(0), "asm-pay-token-address-no-zero");
             payTokens[addr(value_)] = uint(value1_) > 0;
         } else if (what_ == "issuers") {
@@ -661,18 +683,13 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
 
         } else if (what_ == "priceFeed") {
 
-            require(cdcs[addr(value_)] || payTokens[addr(value_)], "asm-token-not-allowed-pricefeed");
-
             require(addr(value1_) != address(address(0x0)), "asm-wrong-pricefeed-address");
-
             priceFeed[addr(value_)] = addr(value1_);
 
         } else if (what_ == "manualRate") {
 
             address token = addr(value_);
-
-            require(payTokens[token] || cdcs[token], "Token not allowed manualRate");
-
+            require(payTokens[token] || cdcs[token] || dcdcs[token], "Token not allowed manualRate");
             manualRate[token] = uint256(value1_) > 0;
 
         } else if (what_ == "shapes") {
@@ -697,7 +714,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         } else if (what_ == "overCollRatio") {
             overCollRatio = uint(value_);
             require(overCollRatio >= 1 ether, "asm-system-must-be-overcollaterized");
-            require(totalCollateralV >= wmul(overCollRatio, totalCdcV), "asm-can-not-introduce-new-ratio");
+            require(totalDpassV >= wmul(overCollRatio, totalCdcV), "asm-can-not-introduce-new-ratio");
         }  else if (what_ == "redFlagInterval") {
             redFlagInterval = uint(value_);
             require(redFlagInterval != 0, "asm-red-flag-interval-0");
@@ -748,7 +765,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         bool accept,
         bytes32 introHash,
         bytes32 introUrl)
-    public maint nonReentrant auth {
+    public maint nonReentrant auth custodn {
         require(custodianCandidates[msg.sender], "asm-you-should-be-enabled-custodian");
         custodians[msg.sender] = accept;
         if(!accept) {
@@ -780,11 +797,26 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         require(issuers[issuer], "asm-issuer-not-allowed");
         tokenId = Dpass(token).mintDiamondTo(msg.sender, msg.sender, issuer, report, ownerPrice, 0, "created", attributes, attributesHash, hashingAlgorithm);
         (uint24 weightRange, bool shape, uint24 weight, bytes1 color, bytes4 clarity, uint256 price) = getAttributes(attributes);
-        totalCollateralV = add(totalCollateralV, price);
-
+        _updateCollateral(price, 0, msg.sender);
         totalWeight[shape][weightRange][color][clarity] = add(
             totalWeight[shape][weightRange][color][clarity],
             weight);
+        weightCust[msg.sender][shape][weightRange][color][clarity] = add(
+            weightCust[msg.sender][shape][weightRange][color][clarity],
+            weight);
+    }
+
+    function custodianRegisterDiamond(
+        address token,
+        uint amount)
+    public maint nonReentrant auth custodn {
+        uint tokenId;
+        uint valueMinted = wmulV(amount, _updateRate(token), token);
+
+        require(dcdcs[token], "asm-not-dcdc-token");
+        DSToken(token).mint(msg.sender, amount);
+        updateDcdcValue(token);
+        _updateCollateral(valueMinted, 0, msg.sender);
     }
 
     function getAttributes(bytes32[] memory attributes)
@@ -861,10 +893,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                     totalCdcV,
                     wdiv(
                         allowedCdcMintValueCalc,
-                        totalCollateralCustV[srcCustodian])),
+                        totalDpassCustV[srcCustodian])),
                 totalDpassSoldV[srcCustodian]
             ) <=
-            add(totalCollateralCustV[srcCustodian], dust)
+            add(totalDpassCustV[srcCustodian], dust)
             , "asm-undercollaterized");
     }
 
@@ -910,6 +942,15 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         price = _getTokenPrice(token, tokenId);
 
         _updateCollateral(0, price, msg.sender);
+                                                                            //TODO: update weight!!!!
+        (uint24 weightRange, bool shape, uint24 weight, bytes1 color, bytes4 clarity, uint256 price) = getAttributes(attributes);
+        totalWeight[shape][weightRange][color][clarity] = sub(
+            totalWeight[shape][weightRange][color][clarity],
+            weight);
+
+        weightCust[msg.sender][shape][weightRange][color][clarity] = sub(
+            weightCust[msg.sender][shape][weightRange][color][clarity],
+            weight);
 
         require(                                                        // custodian's total collateral value must be ...
                                                                         // more or equal than proportional cdc value and dpasses sold
@@ -918,10 +959,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                     totalCdcV,
                     wdiv(
                         allowedCdcMintValueCalc,
-                        totalCollateralCustV[msg.sender])),
+                        totalDpassCustV[msg.sender])),
                 totalDpassSoldV[msg.sender]
             ) <=
-            add(totalCollateralCustV[msg.sender], dust)
+            add(totalDpassCustV[msg.sender], dust)
             , "asm-undercollaterized");
 
         // TODO: make sure we can readd removed diamond, how does invalid state work? Must make sure we can handle invalid if eg.: bad attributes were added, make sure we can recreate token with same issuer and reportId.
@@ -946,7 +987,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         require(dpasses[token], "asm-token-not-allowed");
         require(payTokens[payToken], "asm-paytoken-not-allowed");
         require(Dpass(token).getApproved(tokenId) == address(this), "asm-we-are-not-approved");
-        require(wdivT(maxFeeV, updateRate(token), token) > allowedToUs, "asm-paytoken-not-enough");
+        require(wdivT(maxFeeV, _updateRate(token), token) > allowedToUs, "asm-paytoken-not-enough");
         if(usrRedeem.payToken == address(0)) {                              // if we create new redeem
             redeemRequest[token][tokenId] = Redeem({
                 owner: msg.sender,
@@ -994,7 +1035,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         require(chargeRedeem.owner == tokenOwner, "asm-owner-changed-since-chargeRedeem");
         require(dpasses[token], "asm-token-not-allowed");
         require(Dpass(token).getCustodian(tokenId) == msg.sender, "asm-not-custodian-of-token");
-        priceT = wdivT(priceV, updateRate(chargeRedeem.payToken), chargeRedeem.payToken);
+        priceT = wdivT(priceV, _updateRate(chargeRedeem.payToken), chargeRedeem.payToken);
         DSToken(chargeRedeem.payToken).transferFrom(chargeRedeem.owner, Dpass(token).getCustodian(tokenId), priceT);
         Dpass(token).redeem(tokenId);
         deleteRedeem(token, tokenId, false);
@@ -1121,7 +1162,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         if(accept) {
             custodianToRemove[custodian] = false;
             flag[custodian] = red;
-            _updateCollateral(0, totalCollateralCustV[custodian], custodian);
+            _updateCollateral(0, totalDpassCustV[custodian], custodian);
             require(
                 add(
                     add(
@@ -1129,7 +1170,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                             totalCdcV,
                             wdiv(
                                 allowedCdcMintValueCalc,
-                                totalCollateralCustV[custodian])),
+                                totalDpassCustV[custodian])),
                         totalDpassSoldV[custodian]),
                     dust) >=
                     totalPaidV[custodian]
@@ -1142,10 +1183,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                         totalCdcV,
                         wdiv(
                             allowedCdcMintValueCalc,
-                            totalCollateralCustV[custodian])),
+                            totalDpassCustV[custodian])),
                     totalDpassSoldV[custodian]
                 ) <=
-                add(totalCollateralCustV[custodian], dust)
+                add(totalDpassCustV[custodian], dust)
                 , "asm-not-enough-collateral");
 
             emit LogFlag(msg.sender, custodian, red);
@@ -1325,9 +1366,9 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                 [color[diamond]]
                 [clarity[diamond]];
 
-            totalCollateralV = currentPrice >= newPrice ?
-                sub(totalCollateralV, wmul(sub(currentPrice, newPrice), currentWeight)) :
-                add(totalCollateralV, wmul(sub(newPrice, currentPrice), currentWeight));
+            totalDpassV = currentPrice >= newPrice ?
+                sub(totalDpassV, wmul(sub(currentPrice, newPrice), currentWeight)) :
+                add(totalDpassV, wmul(sub(newPrice, currentPrice), currentWeight));
 
             basePrice[shapeRoundOrPear[diamond]]
                 [weightClass[diamond]]
@@ -1351,7 +1392,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                         totalCdcV,
                         wdiv(
                             allowedCdcMintValueCalc,
-                            totalCollateralCustV[msg.sender])),
+                            totalDpassCustV[msg.sender])),
                     totalDpassSoldV[msg.sender]),
                 dust) >=
             add(
@@ -1367,7 +1408,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         require(allowDeposit[msg.sender][token][amt], "asm-not-allowed-to-deposit");
         require(payTokens[token], "asm-not-a-valid-token");
         uint balance = DSToken(token).balanceOf(address(this)); // this assumes that first tokens are sent, than notifyTransferFrom is called, if it is the other way around then amtOrId must not be subrtacted from current balance
-        totalPaidV[msg.sender] = sub(totalPaidV[msg.sender], wmulV(updateRate(token), amt, token));
+        totalPaidV[msg.sender] = sub(totalPaidV[msg.sender], wmulV(_updateRate(token), amt, token));
 
         DSToken(token).transferFrom(msg.sender, address(this), amt);
 
@@ -1425,11 +1466,11 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
             [color[diamond]]
             [clarity[diamond]];
 
-            oldCustV = totalCollateralCustV[custodian];
+            oldCustV = totalDpassCustV[custodian];
 
             newCustV = sub(
                 add(
-                    totalCollateralV,
+                    totalDpassV,
                     wmul(newPrice, currentWeight)),
                 wmul(currentPrice, currentWeight));
 
@@ -1442,7 +1483,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     function updateCustodianValue(address custodian, uint256 value) public maint nonReentrant auth assetMgr {
         require(assetMgrCanSetCollateralValue, "asm-asset-manager-not-allowed");
 
-        _updateCollateral(value, totalCollateralCustV[custodian], custodian);
+        _updateCollateral(value, totalDpassCustV[custodian], custodian);
     }
 
     function notifyTransferFrom(address token, address src, address dst, uint256 amtOrId) external nonReentrant auth {
@@ -1458,15 +1499,15 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
             dpassSoldV[src][token] = price;
 
             require(                                                        // custodian's total collateral value must be ...
-                                                                            // more or equal than proportional cdc value and dpasses sold
+                                                                            // ... more or equal than proportional cdc value and dpasses sold
                 add(
                     wmul(
                         totalCdcV,
                         wdiv(
                             allowedCdcMintValueCalc,
-                            totalCollateralCustV[src])),
+                            totalDpassCustV[src])),
                     totalDpassSoldV[src]) <=
-                add(totalCollateralCustV[src], dust)
+                add(totalDpassCustV[src], dust)
                 , "asm-token-cant-be-sent");
 
         } else if (dst == address(this)) {                                  // user sells ERC20 token to us
@@ -1485,7 +1526,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                         tokenPurchaseRate[token],
                         balance,
                         token),
-                    wmulV(updateRate(token), amtOrId, token)),
+                    wmulV(_updateRate(token), amtOrId, token)),
                 add(balance, amtOrId));
 
         } else if (dpasses[token]) {                                        // user sells erc721 token to custodian
@@ -1511,9 +1552,9 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     function _updateCollateral(uint positiveV, uint negativeV, address custodian) internal {
         require(custodians[custodian], "asm-not-a-custodian");
 
-        totalCollateralCustV[custodian] = sub(
+        totalDpassCustV[custodian] = sub(
             add(
-                totalCollateralCustV[custodian],
+                totalDpassCustV[custodian],
                 positiveV),
             negativeV);
 
@@ -1523,14 +1564,14 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
                 positiveV),
             negativeV);
 
-        totalCollateralV = sub(
+        totalDpassV = sub(
             add(
-                totalCollateralV,
+                totalDpassV,
                 positiveV),
             negativeV);
 
-        if (add(totalCdcV, dust) >= wmul(totalCollateralV, overCollRatio)) {
-            if (add(totalCdcV, dust) >= totalCollateralV) {
+        if (add(totalCdcV, dust) >= wmul(totalDpassV, overCollRatio)) {
+            if (add(totalCdcV, dust) >= totalDpassV) {
                 systemFlag = red;
                 emit LogSystemFlag(red);
             } else {
@@ -1544,9 +1585,10 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     }
 
     function getAmtForSale(address token) external view returns(uint256) {
+        require(cdcs[token], "asm-token-is-not-cdc");
         return wdivT(
             sub(
-                wdiv(totalCollateralV, overCollRatio),
+                wdiv(totalDpassV, overCollRatio),
                 totalCdcV),
             _getNewRate(token),
             token);
@@ -1554,14 +1596,14 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
 
     function mint(address token, address dst, uint256 amt) public maint nonReentrant auth {
         require(cdcs[token], "asm-token-is-not-cdc");
-        totalCdcV = add(totalCdcV, wmulV(updateRate(token), amt, token));
-        require(add(totalCollateralV, dust) >= wmul(overCollRatio, totalCdcV), "asm-not-enough-collateral");
+        totalCdcV = add(totalCdcV, wmulV(_updateRate(token), amt, token));
+        require(add(totalDpassV, dust) >= wmul(overCollRatio, totalCdcV), "asm-not-enough-collateral");
         DSToken(token).mint(dst, amt);
     }
 
     function burn(address token, address src, uint256 amt) public maint nonReentrant auth {
         require(cdcs[token], "asm-token-is-not-cdc");
-        uint tokenRate = updateRate(token);
+        uint tokenRate = _updateRate(token);
 
         totalCdcV = sub(
             totalCdcV,
@@ -1570,7 +1612,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
     }
 
     function isOwnerOf(address token) external view returns(bool) {
-        return cdcs[token] || dpasses[token];
+        return cdcs[token] || dpasses[token] || dcdcs[token];
     }
 
     /*
@@ -1597,27 +1639,38 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
             _setFlag(auditCustodian, yellow);
         } else if (audit[auditCustodian] < block.timestamp - redFlagInterval) {
             _setFlag(auditCustodian, red);
-            _updateCollateral(0, totalCollateralCustV[auditCustodian], auditCustodian);
+            _updateCollateral(0, totalDpassCustV[auditCustodian], auditCustodian);
         }
 
         // update cdc values
         currCdc = next[currCdc];
-        _updateCdcValue(currCdc);                                            // TODO: optimize gas, call it once a day, or call by oracles
+        updateCdcValue(currCdc);                                            // TODO: optimize gas, call it once a day, or call by oracles
+        updateDcdcValue(currDcdc);                                           // TODO: optimize gas, call it once a day, or call by oracles
     }
 
-    function _updateCdcValue(address cdc) internal {
-        uint newValue = wmulV(DSToken(cdc).totalSupply(), updateRate(cdc), cdc);
+    function updateCdcValue(address cdc) public {
+        require(cdcs[cdc], "asm-not-a-cdc-token");
+        uint newValue = wmulV(DSToken(cdc).totalSupply(), _updateRate(cdc), cdc);
 
         totalCdcV = sub(add(totalCdcV, newValue), cdcValues[cdc]);
 
         cdcValues[cdc] = newValue;
     }
 
+    function updateDcdcValue(address dcdc) public {
+        require(dcdcs[dcdc], "asm-not-a-dcdc-token");
+        uint newValue = wmulV(DSToken(dcdc).totalSupply(), _updateRate(dcdc), dcdc);
+
+        totalCdcV = sub(add(totalCdcV, newValue), dcdcValues[dcdc]);
+
+        dcdcValues[dcdc] = newValue;
+    }
+
     /**
     * @dev Get exchange rate for a token
     */
-    function updateRate(address token) internal returns (uint256 rate_) {
-        require((rate_ = _getNewRate(token)) > 0, "updateRate: rate must be > 0");
+    function _updateRate(address token) internal returns (uint256 rate_) {
+        require((rate_ = _getNewRate(token)) > 0, "asm-_updateRate-rate-gt-zero");
         rate[token] = rate_;
     }
 
@@ -1631,7 +1684,7 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
 
         require(
             address(0) != priceFeed[token_],                            // require token to have a price feed
-            "No price feed for token");
+            "asm-no-price-feed");
 
         (usdRateBytes, feedValid) = 
             TrustedFeedLike(priceFeed[token_]).peek();                  // receive DPT/USD price
@@ -1680,3 +1733,9 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
 // TODO: do something with system flag
 // TODO: set a round robin set of red flags on all dpass tokens for custodian.
 // TODO: handle collaterals when moving (update desstination total collateral value)
+// TODO: write function that finalizes move of diamonds
+// TODO: restrict what token pairs can be sold on market
+// TODO: define how to add and remove dcdc
+// TODO: make diamond integer (no fractions allowed)
+// TODO: function to set sellPrice on diamondExchange for diamond
+// TODO: set stoppable modifier to functions

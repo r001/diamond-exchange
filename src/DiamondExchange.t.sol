@@ -514,8 +514,6 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             asm,                                                                // address _custodian
             "gia",                                                              // bytes32 _issuer,
             "2141438167",                                                       // bytes32 _report,
-            dpassOwnerPrice,                                                    // uint _ownerPrice,
-            139 ether,                                                          // uint _marketplacePrice,
             "sale",                                                             // bytes32 _state,
             attributes,// bytes32[] memory _attributes,
             bytes32(uint(0xc0a5d062e13f99c8f70d19dc7993c2f34020a7031c17f29ce2550315879006d7)), // bytes32 _attributesHash
@@ -537,8 +535,6 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             asm,                                                                // address _custodian,
             "gia",                                                              // bytes32 _issuer,
             "2141438168",                                                       // bytes32 _report,
-            dpassOwnerPrice,                                                    // uint _ownerPrice,
-            109 ether,                                                          // uint _marketplacePrice,
             "sale",                                                             // bytes32 _state,
             attributes,                                                         // bytes32[] memory _attributes,
             bytes32(0xac5c1daab5131326b23d7f3a4b79bba9f236d227338c5b0fb17494defc319886), // bytes32 _attributesHash
