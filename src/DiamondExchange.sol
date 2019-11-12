@@ -57,6 +57,7 @@ contract TrustedAsm {
     function notifyTransferFrom(address token, address src, address dst, uint256 id721) external;
     function getBasePrice(address erc721, uint256 id721) external view returns(uint256);
     function getAmtForSale(address token) external view returns(uint256);
+    function isDpass(address dpass) external view returns(bool);
     function mint(address token, address dst, uint256 amt) external;
 }
 
@@ -496,6 +497,19 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
     function setConfig(bytes32 what_, uint256 value_, uint256 value1_) public auth { setConfig(what_, b32(value_), b32(value1_)); }
     function setConfig(bytes32 what_, address value_, bool value1_) public auth { setConfig(what_, b32(value_), b32(value1_)); }
 
+    // TODO: test
+    function getDiamondInfo(address token, uint256 tokenId) 
+    public view returns(
+        address[2] memory ownerCustodian,
+        bytes32[6] memory attrs,
+        uint24 carat,
+        uint price
+    ) {
+        require(asm.isDpass(token), "Token not a dpass token");
+        (ownerCustodian, attrs, carat) = Dpass(token).getDiamondAll(tokenId);
+        price = getPrice(token, tokenId);
+    }
+
 
     /**
     * @dev Get sell price of dpass token
@@ -618,9 +632,10 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
     function getDecimals(address token_) public view returns (uint8) {
         require(decimalsSet[token_], "Token with unset decimals");
         uint dec = 0;
-        while(dec <= 77 && decimals[token_] % 10 ** dec == 0){
+        while(dec <= 77 && decimals[token_] % uint(10) ** dec == 0){
             dec++;
         }
+        dec--;
         return uint8(dec);
     }
 
@@ -941,7 +956,7 @@ contract DiamondExchange is DSAuth, DSStop, DSMath, DiamondExchangeEvents {
 
         address custodian = canBuyErc20[buyToken] ?
             custodian20[buyToken] :
-            TrustedErc721(buyToken).ownerOf(buyAmtOrId);
+            Dpass(buyToken).getCustodian(buyAmtOrId);
 
         txId++;
 

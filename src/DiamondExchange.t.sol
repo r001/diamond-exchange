@@ -303,7 +303,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
     address payable public wal;                 // DptTester()
     address payable public asm;                 // TrustedASMTester()
     address payable public user;                // DiamondExchangeTester()
-    address payable public seller;         // DiamondExchangeTester()
+    address payable public seller;              // DiamondExchangeTester()
 
     address payable public burner;              // Burner()
     address payable public fca;                 // TestFeeCalculator()
@@ -405,7 +405,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         feed[dpt] = address(new TestFeedLike(usdRate[dpt], true));
         feed[cdc] = address(new TestFeedLike(usdRate[cdc], true));
         feed[dai] = address(new TestFeedLike(usdRate[dai], true));
-        feed[eng] = address(new TestFeedLike(usdRate[dai], true));
+        feed[eng] = address(new TestFeedLike(usdRate[eng], true));
 
         burner = address(uint160(address(new Burner(DSToken(dpt))))); // Burner()
 
@@ -502,12 +502,6 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         // Prepare dpass tokens
         uint dpassOwnerPrice = 137 ether;
-        bytes32[] memory attributes = new bytes32[](5);
-        attributes[0] = "round";
-        attributes[1] = "2.1";
-        attributes[2] = "G";
-        attributes[3] = "VVS1";
-        attributes[4] = "";
 
         dpassId[user] = Dpass(dpass).mintDiamondTo(
             user,                                                               // address _to,
@@ -515,7 +509,8 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             "gia",                                                              // bytes32 _issuer,
             "2141438167",                                                       // bytes32 _report,
             "sale",                                                             // bytes32 _state,
-            attributes,// bytes32[] memory _attributes,
+            "BR,IF,F,0.01",
+            0.2 * 100,
             bytes32(uint(0xc0a5d062e13f99c8f70d19dc7993c2f34020a7031c17f29ce2550315879006d7)), // bytes32 _attributesHash
             "20191101"
         );
@@ -536,7 +531,8 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             "gia",                                                              // bytes32 _issuer,
             "2141438168",                                                       // bytes32 _report,
             "sale",                                                             // bytes32 _state,
-            attributes,                                                         // bytes32[] memory _attributes,
+            "BR,VVS1,F,3.00",
+            3.1 * 100,
             bytes32(0xac5c1daab5131326b23d7f3a4b79bba9f236d227338c5b0fb17494defc319886), // bytes32 _attributesHash
             "20191101"
         );

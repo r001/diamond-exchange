@@ -525,6 +525,11 @@ contract AssetManagement is DSAuth, DSStop, DSMath, AssetManagementEvents {
         return dcdcValues[dcdc];
     }
 
+    function getTotalDcdcCustV(address custodian) public view returns(uint256) {
+        require(custodians[custodian], "asm-not-a-custodian");
+        return totalDcdcCustV[custodian];
+    }
+
     function getTotalDpassCustV(address custodian) public view returns(uint256) {
         require(custodians[custodian], "asm-not-a-custodian");
         return totalDpassCustV[custodian];
