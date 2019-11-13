@@ -1,8 +1,10 @@
 pragma solidity ^0.5.11;
 
 import "ds-test/test.sol";
+import "ds-auth/auth.sol";
 import "ds-math/math.sol";
 import "ds-token/token.sol";
+import "ds-guard/guard.sol";
 import "cdc-token/Cdc.sol";
 import "dpass/Dpass.sol";
 import "./DiamondExchange.sol";
@@ -221,14 +223,25 @@ contract DiamondExchangeTester is Wallet {
 }
 
 
-contract TrustedASMTester {
+contract TrustedASMTester is DSAuth {
     bool public txEnabled = true;
     mapping(address => mapping( uint256 => uint256)) public price;
+    mapping(address => mapping( uint256 => uint256)) public basePrice;
     mapping(address => uint256) public forSale;
     mapping(address => bool) public own;
+    mapping(address => bool) public dpasses;
+    mapping(address => bool) public cdcs;
 
-    function setPrice(address erc721, uint256 id721, uint256 price_) public {
-        price[erc721][id721] = price_;
+    function setPrice(address payable exchange_, address erc721, uint256 id721, uint256 price_) public {
+        DiamondExchange(exchange_).setSellPrice(erc721, id721, price_);
+    }
+    
+    function setDpass(address dpass, bool enable) public {
+        dpasses[dpass] = enable;
+    }
+
+    function setCdc(address cdc, bool enable) public {
+        cdcs[cdc] = enable;
     }
 
     function setTxEnabled(bool enabled_) public {
@@ -248,23 +261,28 @@ contract TrustedASMTester {
        tok.transfer(dst, value);
     }
 
-    function notifyTransferFrom(TrustedErc721 erc721, address src, address dst, uint256 id721) public view {
-        // begin----------------- just to avoid compiler warnings --------
-        TrustedErc721 a;
-        address b;
-        uint c;
-
-        a = erc721;
-        b = src;
-        b = dst;
-        c = id721;
-        // end----------------- just to avoid compiler warnings --------
-
+    function notifyTransferFrom(address token, address src, address dst, uint256 amtOrId) public {
         require(txEnabled, "Transaction is not allowed");
+        if (dpasses[token] && src == address(this)) {
+        } else if (dst == address(this) && !dpasses[token]) {
+            if (cdcs[token]) {                                              //
+                Cdc(token).burn(amtOrId);
+            }
+        } else if(dpasses[token]) {
+        } else {
+            require(false, "asm-unsupported-tx");
+        }
     }
 
-    function getPrice(address erc721, uint256 id721) public view returns(uint256) {
-        return price[erc721][id721];
+    function getPrice(address payable exchange_, address erc721, uint256 id721) public view returns(uint256) {
+        DiamondExchange(exchange_).getSellPrice(erc721, id721);
+    }
+
+    function getBasePrice(address erc721, uint256 id721) public view returns(uint256) {
+        return basePrice[erc721][id721];
+    }
+    function setBasePrice(address erc721, uint256 id721, uint256 price_) public returns(uint256) {
+        basePrice[erc721][id721] = price_;
     }
 
     function getAmtForSale(address token) public view returns (uint256){
@@ -273,6 +291,17 @@ contract TrustedASMTester {
 
     function isOwnerOf(address token) public view returns(bool) {
         return own[token];
+    }
+
+    function mint(address token, address dst, uint256 amt) public {
+        require(cdcs[token], "Not a cdc token");
+        Cdc(token).mint(dst, amt); 
+    }
+
+    function doApprove721(address token, address to, uint id_) public {
+        require(token != address(0), "Can't approve token of 0x0");
+        require(to != address(0), "Can't approve address of 0x0");
+        Dpass(token).approve(to, id_);
     }
 
     function () external payable {
@@ -351,6 +380,9 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
     uint balanceUserIncreaseV;
     uint balanceUserDecreaseT;
     uint balanceUserDecreaseV;
+    uint dpassOwnerPrice;
+    DSGuard public guard;
+    bytes32 constant public ANY = bytes32(uint(-1));
 
     function setUp() public {
         cdc = address(new Cdc());
@@ -412,6 +444,13 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         wal = address(uint160(address(new DptTester(DSToken(dai))))); // DptTester()
         asm = address(uint160(address(new TrustedASMTester())));
+        guard = new DSGuard();
+        TrustedASMTester(asm).setAuthority(guard);
+        guard.permit(address(this), address(asm), ANY);
+        guard.permit(address(asm), cdc, ANY);
+        guard.permit(address(asm), dpass, ANY);
+        DSToken(cdc).setAuthority(guard);
+        Dpass(dpass).setAuthority(guard);
 
         custodian20[dpt] = asm;
         custodian20[cdc] = asm;
@@ -421,6 +460,8 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         TrustedASMTester(asm).setOwnerOf(cdc, true);                             // asset management will handle this token
         TrustedASMTester(asm).setAmtForSale(cdc, INITIAL_BALANCE);
+        TrustedASMTester(asm).setCdc(cdc, true);
+        TrustedASMTester(asm).setDpass(dpass, true);
         Cdc(cdc).transfer(asm, INITIAL_BALANCE);
 
         TrustedASMTester(asm).setOwnerOf(dpass, true);
@@ -460,16 +501,16 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         DiamondExchange(exchange).setConfig("custodian20", eth, custodian20[eth]);
         // DiamondExchange(exchange).setConfig("handledByAsm", eth, true);      // set true if token can be bougt by user and asm should handle it
 
-            DiamondExchange(exchange).setConfig("canSellErc20", cdc, true);
-            DiamondExchange(exchange).setConfig("canBuyErc20", cdc, true);
-            DiamondExchange(exchange).setConfig("custodian20", cdc, custodian20[cdc]);
-            DiamondExchange(exchange).setConfig("priceFeed", cdc, feed[cdc]);
-            DiamondExchange(exchange).setConfig("rate", cdc, usdRate[cdc]);
-            DiamondExchange(exchange).setConfig("manualRate", cdc, true);
-            DiamondExchange(exchange).setConfig("decimals", cdc, 18);
-            DiamondExchange(exchange).setConfig("handledByAsm", cdc, true);
+        DiamondExchange(exchange).setConfig("canSellErc20", cdc, true);
+        DiamondExchange(exchange).setConfig("canBuyErc20", cdc, true);
+        DiamondExchange(exchange).setConfig("custodian20", cdc, custodian20[cdc]);
+        DiamondExchange(exchange).setConfig("priceFeed", cdc, feed[cdc]);
+        DiamondExchange(exchange).setConfig("rate", cdc, usdRate[cdc]);
+        DiamondExchange(exchange).setConfig("manualRate", cdc, true);
+        DiamondExchange(exchange).setConfig("decimals", cdc, 18);
+        DiamondExchange(exchange).setConfig("handledByAsm", cdc, true);
 
-            DiamondExchange(exchange).setConfig("canSellErc20", dpt, true);
+        DiamondExchange(exchange).setConfig("canSellErc20", dpt, true);
         DiamondExchange(exchange).setConfig("custodian20", dpt, asm);
         DiamondExchange(exchange).setConfig("priceFeed", dpt, feed[dpt]);
         DiamondExchange(exchange).setConfig("rate", dpt, usdRate[dpt]);
@@ -501,11 +542,11 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         DSToken(eng).approve(exchange, uint(-1));
 
         // Prepare dpass tokens
-        uint dpassOwnerPrice = 137 ether;
-
+        dpassOwnerPrice = 137 ether;
+        Dpass(dpass).setCccc("BR,IF,F,0.01", true);
         dpassId[user] = Dpass(dpass).mintDiamondTo(
             user,                                                               // address _to,
-            asm,                                                                // address _custodian
+            seller,                                                             // address _custodian
             "gia",                                                              // bytes32 _issuer,
             "2141438167",                                                       // bytes32 _report,
             "sale",                                                             // bytes32 _state,
@@ -514,10 +555,9 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             bytes32(uint(0xc0a5d062e13f99c8f70d19dc7993c2f34020a7031c17f29ce2550315879006d7)), // bytes32 _attributesHash
             "20191101"
         );
-        TrustedASMTester(asm).setPrice(dpass, dpassId[user], dpassOwnerPrice);
+        TrustedASMTester(asm).setPrice(exchange, dpass, dpassId[user], dpassOwnerPrice);
         DiamondExchangeTester(user).doApprove721(dpass, exchange, dpassId[user]);
 
-        dpassOwnerPrice = 151 ether;
         bytes32[] memory attributes1 = new bytes32[](5);
         attributes1[0] = "round";
         attributes1[1] = "3.1";
@@ -525,9 +565,11 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         attributes1[3] = "VVS1";
         attributes1[4] = "";
 
+
+        Dpass(dpass).setCccc("BR,VVS1,F,3.00", true);
         dpassId[seller] = Dpass(dpass).mintDiamondTo(
-            seller,                                                             // address _to,
-            asm,                                                                // address _custodian,
+            asm,                                                                // address _to,
+            seller,                                                             // address _custodian,
             "gia",                                                              // bytes32 _issuer,
             "2141438168",                                                       // bytes32 _report,
             "sale",                                                             // bytes32 _state,
@@ -537,8 +579,8 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             "20191101"
         );
 
-        TrustedASMTester(asm).setPrice(dpass, dpassId[seller], dpassOwnerPrice);
-        DiamondExchangeTester(seller).doApprove721(dpass, exchange, dpassId[seller]);
+        TrustedASMTester(asm).setPrice(exchange, dpass, dpassId[seller], dpassOwnerPrice);
+        TrustedASMTester(asm).doApprove721(dpass, exchange, dpassId[seller]);
         // Prepare seller of DPT fees
 
         user.transfer(INITIAL_BALANCE);
@@ -594,15 +636,17 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
             wmulV(origUserBalanceT, usdRate[sellToken], sellToken) :
             erc20[sellToken] ?
                 wmulV(min(sellAmtOrId, origUserBalanceT), usdRate[sellToken], sellToken) :
-                TrustedASMTester(asm).getPrice(sellToken, sellAmtOrId);
+                dpassOwnerPrice;
 
         buyT = erc20[buyToken] ?                                                        // total amount of token available to buy (or tokenid)
-            min(buyAmtOrId, DSToken(buyToken).balanceOf(custodian20[buyToken])) :
+            DiamondExchange(exchange).isHandledByAsm(buyToken) ?
+                min(buyAmtOrId, TrustedASMTester(asm).getAmtForSale(buyToken)) :
+                min(buyAmtOrId, DSToken(buyToken).balanceOf(custodian20[buyToken])) :
             buyAmtOrId;
 
         buyV = erc20[buyToken] ?                                                        // total value of tokens available to buy (or tokenid)
             wmulV(buyT, usdRate[buyToken], buyToken) :
-            TrustedASMTester(asm).getPrice(buyToken, buyAmtOrId);
+            dpassOwnerPrice;
 
         buySellTokenT = erc20[sellToken] ?                                              // the amount of sellToken to pay for buy token
             wdivT(buyV, usdRate[sellToken], sellToken) :
@@ -691,7 +735,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
                 balanceUserIncreaseT,
                 usdRate[buyToken],
                 buyToken) :
-            TrustedASMTester(asm).getPrice(buyToken, buyAmtOrId);
+            dpassOwnerPrice;
         emit LogTest("balance[user]");
         emit LogTest(balance[user][sellToken]);
         balanceUserDecreaseT = erc20[sellToken] ?
@@ -707,7 +751,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
                 balanceUserDecreaseT,
                 usdRate[sellToken],
                 sellToken) :
-            TrustedASMTester(asm).getPrice(sellToken, sellAmtOrId);
+            dpassOwnerPrice;
 
         emit log_named_uint("---------takeProfitOnlyInDpt", takeProfitOnlyInDpt ? 1 : 0);
         emit log_named_bytes32("----------------sellToken", getName(sellToken));
@@ -740,6 +784,11 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         // DPT (eq fee in USD) must be sold from: liquidityContract balance
         emit log_bytes32("dpt from liq");
+        emit LogTest("actual");
+        emit LogTest(sub(INITIAL_BALANCE, DSToken(dpt).balanceOf(address(liquidityContract))));
+
+        emit LogTest("expected");
+        emit LogTest(sellToken == dpt ? 0 : sub(profitDpt, _takeProfitOnlyInDpt ? feeSpentDpt : wmul(feeSpentDpt, profitRate)));
         assertEqDust(
             sub(INITIAL_BALANCE, DSToken(dpt).balanceOf(address(liquidityContract))),
             sellToken == dpt ? 0 : sub(profitDpt, _takeProfitOnlyInDpt ? feeSpentDpt : wmul(feeSpentDpt, profitRate)),
@@ -747,6 +796,13 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         // ETH for DPT fee must be sent to wallet balance from user balance
         emit log_bytes32("sell token as fee to wal");
+        emit LogTest("actual");
+        emit LogTest(sellToken == eth ?
+                address(wal).balance :
+                DSToken(sellToken).balanceOf(wal));
+
+        emit LogTest("expected");
+        emit LogTest(add(balance[wal][sellToken], sub(restOfFeeT, sellToken == dpt ? profitSellTokenT : 0)));
         assertEqDust(
             sellToken == eth ?
                 address(wal).balance :
@@ -756,18 +812,40 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         // DPT fee have to be transfered to burner
         emit log_bytes32("dpt to burner");
+        emit LogTest("actual");
+        emit LogTest(DSToken(dpt).balanceOf(burner));
+
+        emit LogTest("expected");
+        emit LogTest(profitDpt);
         assertEqDust(DSToken(dpt).balanceOf(burner), profitDpt, dpt);
 
         // custodian balance of tokens sold by user must increase
         if (erc20[sellToken]) {
 
             emit log_bytes32("seller bal inc by ERC20 sold");
-            assertEqDust(
-                sellToken == eth ? custodian20[sellToken].balance : DSToken(sellToken).balanceOf(custodian20[sellToken]),
-                add(
-                    balance[custodian20[sellToken]][sellToken],
-                    sub(finalSellT, restOfFeeT)),
-                sellToken);
+            if (DiamondExchange(exchange).isHandledByAsm(buyToken)) { 
+
+                emit LogTest("actual");
+                emit LogTest(sellToken == eth ? asm.balance : DSToken(sellToken).balanceOf(asm));
+
+                emit LogTest("expected");
+                emit LogTest(add(
+                        balance[asm][sellToken],
+                        sub(finalSellT, restOfFeeT)));
+                assertEqDust(
+                    sellToken == eth ? asm.balance : DSToken(sellToken).balanceOf(asm),
+                    add(
+                        balance[asm][sellToken],
+                        sellToken == cdc ? 0 : sub(finalSellT, restOfFeeT)),
+                    sellToken);
+            } else { 
+                assertEqDust(
+                    sellToken == eth ? custodian20[sellToken].balance : DSToken(sellToken).balanceOf(custodian20[sellToken]),
+                    add(
+                        balance[custodian20[sellToken]][sellToken],
+                        sub(finalSellT, restOfFeeT)),
+                    sellToken);
+            }
         } else {
 
            emit log_bytes32("seller bal inc by ERC721 sold");
@@ -779,9 +857,14 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         // user balance of tokens sold must decrease
         if (erc20[sellToken]) {
 
+            emit LogTest("actual");
+            emit LogTest(sellToken == eth ? user.balance : DSToken(sellToken).balanceOf(user));
+
+            emit LogTest("expected");
+            emit LogTest(sub(
+                    balance[user][sellToken],
+                    finalSellT));
             emit log_bytes32("user bal dec by ERC20 sold");
-            emit LogTest("user.balance");
-            emit LogTest(user.balance);
             assertEqDust(
                 sellToken == eth ? user.balance : DSToken(sellToken).balanceOf(user),
                 sub(
@@ -790,6 +873,11 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
                 sellToken);
 
         } else {
+        emit LogTest("actual");
+        emit LogTest(Dpass(sellToken).ownerOf(sellAmtOrId));
+
+        emit LogTest("expected should not equal");
+        emit LogTest(user);
 
             emit log_bytes32("user bal dec by ERC721 sold");
             assertTrue(Dpass(sellToken).ownerOf(sellAmtOrId) != user);
@@ -799,6 +887,12 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         if (erc20[buyToken]) {
 
             emit log_bytes32("user bal inc by ERC20 bought");
+            emit LogTest("balance");
+            emit LogTest(buyToken == eth ? user.balance : DSToken(buyToken).balanceOf(user));
+            emit LogTest("expected");
+            emit LogTest(add(
+                    balance[user][buyToken],
+                    finalBuyT));
             assertEqDust(
                 buyToken == eth ? user.balance : DSToken(buyToken).balanceOf(user),
                 add(
@@ -818,13 +912,16 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         if (erc20[buyToken]) {
 
             emit log_bytes32("seller bal dec by ERC20 bought");
-            assertEqDust(
-                buyToken == eth ? custodian20[buyToken].balance : DSToken(buyToken).balanceOf(custodian20[buyToken]),
-                sub(
-                    balance[custodian20[buyToken]][buyToken],
-                    balanceUserIncreaseT),
-                buyToken);
-
+            if(DiamondExchange(exchange).isHandledByAsm(buyToken) ) {
+                assertEqDust(DSToken(buyToken).balanceOf(asm), balance[asm][buyToken], buyToken);
+            } else {
+                assertEqDust(
+                    buyToken == eth ? custodian20[buyToken].balance : DSToken(buyToken).balanceOf(custodian20[buyToken]),
+                    sub(
+                        balance[custodian20[buyToken]][buyToken],
+                        balanceUserIncreaseT),
+                    buyToken);
+            }
         } else {
 
             emit log_bytes32("seller bal dec by ERC721 bought");
@@ -836,6 +933,11 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
 
         // make sure fees and tokens sent and received add up
         emit log_bytes32("fees and tokens add up");
+        emit LogTest("actual");
+        emit LogTest(add(balanceUserIncreaseV, feeV));
+
+        emit LogTest("expected");
+        emit LogTest( add(balanceUserDecreaseV, feeSpentDptV));
         assertEqDust(
             add(balanceUserIncreaseV, feeV),
             add(balanceUserDecreaseV, feeSpentDptV));
@@ -2072,7 +2174,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         sendToken(dpt, user, userDpt);
 
         address sellToken = eth;
-        uint sellAmtOrId = 15.65 ether;
+        uint sellAmtOrId = 1 ether;
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]);
     }
@@ -2194,13 +2296,13 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]);
     }
 
-    function testFailForFixCdcBuyDpassUserDptNotEnough() public {
+    function testFailForFixCdcBuyDpassUserDptNotEnoughEnd() public {
 
         userDpt = 1 ether;
         sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
-        uint sellAmtOrId = 25.1 ether;
+        uint sellAmtOrId = 7 ether;
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]);
     }
@@ -2303,7 +2405,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
-        uint sellAmtOrId = 13.55 ether;
+        uint sellAmtOrId = 1 ether;
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]);
     }
@@ -2559,7 +2661,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         sendToken(dpt, user, userDpt);
 
         address sellToken = cdc;
-        uint sellAmtOrId = 25.1 ether;
+        uint sellAmtOrId = 7 ether;
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]);
     }
@@ -2685,7 +2787,7 @@ contract DiamondExchangeTest is DSTest, DSMath, DiamondExchangeEvents {
         sendToken(dpt, user, userDpt);
 
         address sellToken = dai;
-        uint sellAmtOrId = 13.55 ether;
+        uint sellAmtOrId = 1 ether;
 
         doExchange(sellToken, sellAmtOrId, dpass, dpassId[seller]);
     }

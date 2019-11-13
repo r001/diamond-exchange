@@ -674,7 +674,7 @@ contract SimpleAssetManagementTest is DSTest, DSMath {
         assertEq(asm.getCdcValues(cdc1), 0 ether);
         assertEq(asm.getCdcValues(cdc2), 0 ether);
 
-        DSToken(cdc).approve(address(asm), uint(-1));
+        DSToken(cdc).transfer(address(asm), 1 ether);
         asm.burn(cdc, 0.5 ether);
         assertEq(asm.getCdcValues(cdc), 8.5 ether);
         assertEq(asm.getCdcValues(cdc1), 0 ether);
